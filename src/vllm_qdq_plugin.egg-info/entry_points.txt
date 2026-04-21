@@ -1,2 +1,0 @@
-[vllm.general_plugins]
-qdq = vllm_qdq_plugin:register
