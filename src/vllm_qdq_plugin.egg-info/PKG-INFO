@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: vllm-qdq-plugin
+Version: 0.1.0
+Summary: Out-of-tree QDQ (quant-dequant) simulation plugin for vLLM
+Requires-Python: >=3.10
+Requires-Dist: torch
