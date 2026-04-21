@@ -13,18 +13,17 @@ import torch
 logger = logging.getLogger(__name__)
 
 
-def apply_patches():
-    """Patch ops.marlin_gemm and ops.moe_wna16_marlin_gemm with QDQ wrappers."""
-    import vllm._custom_ops as ops
-    from vllm.scalar_type import ScalarType, scalar_types
+def _patch_marlin_gemm(ops, scalar_types, mxfp4_qdq, trace_qdq):
+    """Patch ops.marlin_gemm with QDQ wrapper.
 
-    from .qdq.mxfp4 import mxfp4_qdq
-    from .trace import trace_qdq
+    Returns:
+        Tuple of (attr_name, original_fn, patched_fn) for sys.modules fixup.
+    """
+    from vllm.scalar_type import ScalarType
 
-    _orig_marlin_gemm = ops.marlin_gemm
-    _orig_moe_marlin_gemm = ops.moe_wna16_marlin_gemm
+    _orig = ops.marlin_gemm
 
-    def _patched_marlin_gemm(
+    def _patched(
         a: torch.Tensor,
         c: torch.Tensor | None,
         b_q_weight: torch.Tensor,
@@ -50,13 +49,27 @@ def apply_patches():
             trace_qdq("marlin_gemm", a.shape, a.dtype)
             a = mxfp4_qdq(a, group_size=32)
 
-        return _orig_marlin_gemm(
+        return _orig(
             a, c, b_q_weight, b_bias, b_scales, a_scales, global_scale,
             b_zeros, g_idx, perm, workspace, b_q_type, size_m, size_n,
             size_k, is_k_full, use_atomic_add, use_fp32_reduce, is_zp_float,
         )
 
-    def _patched_moe_marlin_gemm(
+    ops.marlin_gemm = _patched
+    return ("marlin_gemm", _orig, _patched)
+
+
+def _patch_moe_marlin_gemm(ops, scalar_types, mxfp4_qdq, trace_qdq):
+    """Patch ops.moe_wna16_marlin_gemm with QDQ wrapper.
+
+    Returns:
+        Tuple of (attr_name, original_fn, patched_fn) for sys.modules fixup.
+    """
+    from vllm.scalar_type import ScalarType
+
+    _orig = ops.moe_wna16_marlin_gemm
+
+    def _patched(
         input: torch.Tensor,
         output: torch.Tensor | None,
         b_qweight: torch.Tensor,
@@ -92,7 +105,7 @@ def apply_patches():
             trace_qdq("moe_wna16_marlin_gemm", input.shape, input.dtype)
             input = mxfp4_qdq(input, group_size=32)
 
-        return _orig_moe_marlin_gemm(
+        return _orig(
             input, output, b_qweight, b_bias, b_scales, a_scales,
             global_scale, b_qzeros, g_idx, perm, workspace,
             sorted_token_ids, expert_ids, num_tokens_past_padded,
@@ -102,23 +115,34 @@ def apply_patches():
             thread_k, thread_n, blocks_per_sm,
         )
 
-    # Patch the module attribute
-    ops.marlin_gemm = _patched_marlin_gemm
-    ops.moe_wna16_marlin_gemm = _patched_moe_marlin_gemm
+    ops.moe_wna16_marlin_gemm = _patched
+    return ("moe_wna16_marlin_gemm", _orig, _patched)
 
-    # Also patch any modules that already imported these via
-    # `from vllm import _custom_ops as ops` (they hold a ref to the module,
-    # so updating the module attribute is sufficient). But for any direct
-    # `from vllm._custom_ops import marlin_gemm` we need to fix those too.
+
+def apply_patches():
+    """Patch ops.marlin_gemm and ops.moe_wna16_marlin_gemm with QDQ wrappers."""
+    import vllm._custom_ops as ops
+    from vllm.scalar_type import scalar_types
+
+    from .qdq.mxfp4 import mxfp4_qdq
+    from .trace import trace_qdq
+
+    patches = [
+        _patch_marlin_gemm(ops, scalar_types, mxfp4_qdq, trace_qdq),
+        _patch_moe_marlin_gemm(ops, scalar_types, mxfp4_qdq, trace_qdq),
+    ]
+
+    # Fix up any modules that imported these via
+    # `from vllm._custom_ops import marlin_gemm` (direct ref).
     for mod in list(sys.modules.values()):
         try:
-            if getattr(mod, "marlin_gemm", None) is _orig_marlin_gemm:
-                mod.marlin_gemm = _patched_marlin_gemm
-            if getattr(mod, "moe_wna16_marlin_gemm", None) is _orig_moe_marlin_gemm:
-                mod.moe_wna16_marlin_gemm = _patched_moe_marlin_gemm
+            for attr_name, orig, patched in patches:
+                if getattr(mod, attr_name, None) is orig:
+                    setattr(mod, attr_name, patched)
         except Exception:
             pass
 
     logger.info(
-        "QDQ patches applied: marlin_gemm, moe_wna16_marlin_gemm (MXFP4)"
+        "QDQ patches applied: %s (MXFP4)",
+        ", ".join(name for name, _, _ in patches),
     )
