@@ -46,9 +46,6 @@ VLLM_QDQ=1 VLLM_QDQ_TRACE=1 vllm serve /path/to/model
 |---|---|---|---|
 | **MXFP4** (E2M1 + E8M0 scales) | `marlin_gemm` | ✅ Supported | Dense quantized linear (MXFP4 via Marlin) |
 | **MXFP4** (E2M1 + E8M0 scales) | `moe_wna16_marlin_gemm` | ✅ Supported | MoE quantized linear (MXFP4 via Marlin) |
-| **FP8** (E4M3 / E5M2) | `cutlass_scaled_mm` | 🔲 Planned | FP8 GEMM via CUTLASS |
-| **INT4** (symmetric) | `marlin_gemm` | 🔲 Planned | GPTQ/AWQ via Marlin |
-| **INT8** (symmetric) | `cutlass_scaled_mm` | 🔲 Planned | W8A8 via CUTLASS |
 
 ### How QDQ Works
 

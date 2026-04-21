@@ -10,8 +10,8 @@ import sys
 
 import torch
 
-logger = logging.getLogger(__name__)
-
+from vllm.logger import init_logger
+logger = init_logger(__name__)
 
 def _patch_marlin_gemm(ops, scalar_types, mxfp4_qdq, trace_qdq):
     """Patch ops.marlin_gemm with QDQ wrapper.
@@ -142,7 +142,7 @@ def apply_patches():
         except Exception:
             pass
 
-    logger.info(
+    logger.warning(
         "QDQ patches applied: %s (MXFP4)",
         ", ".join(name for name, _, _ in patches),
     )
