@@ -22,6 +22,21 @@ FLOAT8_E4M3_MIN_NORMAL = 2.0 ** -6
 FLOAT8_E4M3_SUBNORMAL_STEP = 2.0 ** -9
 
 
+def _round_half_to_even(x: torch.Tensor) -> torch.Tensor:
+    """Round to nearest integer with round-half-to-even (banker's rounding).
+
+    Explicitly handles ties by rounding to the nearest even integer, matching
+    the tie-breaking behavior of the MXFP4 simulator.
+    """
+    floor_x = torch.floor(x)
+    frac = x - floor_x
+    tie = frac == 0.5
+    round_up = frac > 0.5
+    # On a tie, round up only when floor_x is odd (so floor_x+1 is even).
+    round_up_on_tie = (floor_x % 2.0) != 0.0
+    return floor_x + (round_up | (tie & round_up_on_tie)).to(floor_x.dtype)
+
+
 def _quantize_to_e4m3fn_no_fp8_dtype(x: torch.Tensor) -> torch.Tensor:
     """Quantize fp32 tensor to E4M3FN value grid without using fp8 dtype casts.
 
@@ -35,7 +50,7 @@ def _quantize_to_e4m3fn_no_fp8_dtype(x: torch.Tensor) -> torch.Tensor:
     ax = torch.clamp(ax, 0.0, FLOAT8_E4M3FN_MAX)
 
     # Subnormal region: values are multiples of 2^-9 in [0, 7*2^-9].
-    sub_q = torch.round(ax / FLOAT8_E4M3_SUBNORMAL_STEP) * FLOAT8_E4M3_SUBNORMAL_STEP
+    sub_q = _round_half_to_even(ax / FLOAT8_E4M3_SUBNORMAL_STEP) * FLOAT8_E4M3_SUBNORMAL_STEP
     sub_q = torch.clamp(sub_q, 0.0, 7.0 * FLOAT8_E4M3_SUBNORMAL_STEP)
 
     # Normal region: step is 2^(e-3), where e=floor(log2(|x|)) in [-6, 8].
@@ -43,7 +58,7 @@ def _quantize_to_e4m3fn_no_fp8_dtype(x: torch.Tensor) -> torch.Tensor:
     e = torch.floor(torch.log2(safe_ax))
     e = torch.clamp(e, -6.0, 8.0)
     step = torch.exp2(e - 3.0)
-    norm_q = torch.round(ax / step) * step
+    norm_q = _round_half_to_even(ax / step) * step
 
     # Rounding can cross exponent boundary; clamp to finite max.
     norm_q = torch.clamp(norm_q, FLOAT8_E4M3_MIN_NORMAL, FLOAT8_E4M3FN_MAX)
