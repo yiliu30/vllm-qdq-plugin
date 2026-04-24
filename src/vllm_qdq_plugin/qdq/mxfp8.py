@@ -96,12 +96,12 @@ def mxfp8_qdq(x: torch.Tensor, group_size: int = 32) -> torch.Tensor:
         - FLOAT8_E4M3_MAX_UNBIASED_EXP
     )
     scale_exp = torch.clamp(scale_exp, 0, 2 * FLOAT8_E8M0_MAX_EXP)
-    scale = (2.0 ** (scale_exp - FLOAT8_E8M0_MAX_EXP)).to(orig_dtype)
+    scale = 2.0 ** (scale_exp - FLOAT8_E8M0_MAX_EXP)
 
     # --- Quantize to E4M3 grid, then dequantize ---
     # Use a dtype-free simulator so torch.compile/inductor never generates Triton
     # fp8e4 kernels (which are unsupported on some architectures).
-    x_scaled = (x / scale[..., None]).to(torch.float32)
-    x_fp8 = _quantize_to_e4m3fn_no_fp8_dtype(x_scaled).to(orig_dtype)
-    x_fp8 = x_fp8 * scale[..., None]
+    x_scaled = x.to(torch.float32) / scale[..., None]
+    x_fp8 = _quantize_to_e4m3fn_no_fp8_dtype(x_scaled)
+    x_fp8 = (x_fp8 * scale[..., None]).to(orig_dtype)
     return x_fp8.reshape(m, -1)[:, :k]
