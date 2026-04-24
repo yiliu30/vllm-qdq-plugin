@@ -42,7 +42,7 @@ def _quantize_to_e4m3fn_no_fp8_dtype(x: torch.Tensor) -> torch.Tensor:
     safe_ax = torch.clamp(ax, min=FLOAT8_E4M3_MIN_NORMAL)
     e = torch.floor(torch.log2(safe_ax))
     e = torch.clamp(e, -6.0, 8.0)
-    step = torch.pow(torch.full_like(ax, 2.0), e - 3.0)
+    step = torch.exp2(e - 3.0)
     norm_q = torch.round(ax / step) * step
 
     # Rounding can cross exponent boundary; clamp to finite max.
