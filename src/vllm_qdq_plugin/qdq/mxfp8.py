@@ -57,7 +57,8 @@ def mxfp8_qdq(x: torch.Tensor, group_size: int = 32) -> torch.Tensor:
 
     Simulates MX MXFP8-E4M3 quantization:
       1. Compute a per-group E8M0 (power-of-2) scale from the group max.
-      2. Divide by scale, round-to-nearest to float8_e4m3fn via PyTorch cast.
+      2. Divide by scale, then quantize to the float8_e4m3fn value grid using
+         the dtype-free E4M3FN simulator.
       3. Multiply back by scale.
 
     Args:
