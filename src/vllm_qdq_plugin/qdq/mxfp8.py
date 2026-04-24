@@ -87,7 +87,7 @@ def mxfp8_qdq(x: torch.Tensor, group_size: int = 32) -> torch.Tensor:
     # --- E8M0 scale computation (done in fp32 to avoid fp16 overflow / underflow) ---
     # E8M0 represents only powers of 2; we choose the smallest power-of-2 scale
     # such that max_element / scale fits within float8_e4m3fn's representable range.
-    block_max_f32 = torch.max(torch.abs(x.float()), dim=-1).values
+    block_max_f32 = torch.max(torch.abs(x), dim=-1).values.to(torch.float32)
     block_max_f32 = block_max_f32.clamp(min=torch.finfo(torch.float32).tiny)
 
     scale_exp = (
