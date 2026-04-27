@@ -13,7 +13,7 @@ import torch
 from vllm.logger import init_logger
 logger = init_logger(__name__)
 
-def _patch_marlin_gemm(ops, scalar_types, mxfp4_qdq, trace_qdq):
+def _patch_marlin_gemm(ops, scalar_types, mxfp4_qdq, mxfp8_qdq, trace_qdq):
     """Patch ops.marlin_gemm with QDQ wrapper.
 
     Returns:
@@ -48,6 +48,9 @@ def _patch_marlin_gemm(ops, scalar_types, mxfp4_qdq, trace_qdq):
         if b_q_type == scalar_types.float4_e2m1f and a.dim() == 2:
             trace_qdq("marlin_gemm", a.shape, a.dtype)
             a = mxfp4_qdq(a, group_size=32)
+        elif b_q_type == scalar_types.float8_e4m3fn and a.dim() == 2:
+            trace_qdq("marlin_gemm", a.shape, a.dtype)
+            a = mxfp8_qdq(a, group_size=32)
 
         return _orig(
             a, c, b_q_weight, b_bias, b_scales, a_scales, global_scale,
@@ -59,7 +62,7 @@ def _patch_marlin_gemm(ops, scalar_types, mxfp4_qdq, trace_qdq):
     return ("marlin_gemm", _orig, _patched)
 
 
-def _patch_moe_marlin_gemm(ops, scalar_types, mxfp4_qdq, trace_qdq):
+def _patch_moe_marlin_gemm(ops, scalar_types, mxfp4_qdq, mxfp8_qdq, trace_qdq):
     """Patch ops.moe_wna16_marlin_gemm with QDQ wrapper.
 
     Returns:
@@ -104,6 +107,9 @@ def _patch_moe_marlin_gemm(ops, scalar_types, mxfp4_qdq, trace_qdq):
         if b_q_type == scalar_types.float4_e2m1f and input.dim() == 2:
             trace_qdq("moe_wna16_marlin_gemm", input.shape, input.dtype)
             input = mxfp4_qdq(input, group_size=32)
+        elif b_q_type == scalar_types.float8_e4m3fn and input.dim() == 2:
+            trace_qdq("moe_wna16_marlin_gemm", input.shape, input.dtype)
+            input = mxfp8_qdq(input, group_size=32)
 
         return _orig(
             input, output, b_qweight, b_bias, b_scales, a_scales,
@@ -125,11 +131,12 @@ def apply_patches():
     from vllm.scalar_type import scalar_types
 
     from .qdq.mxfp4 import mxfp4_qdq
+    from .qdq.mxfp8 import mxfp8_qdq
     from .trace import trace_qdq
 
     patches = [
-        _patch_marlin_gemm(ops, scalar_types, mxfp4_qdq, trace_qdq),
-        _patch_moe_marlin_gemm(ops, scalar_types, mxfp4_qdq, trace_qdq),
+        _patch_marlin_gemm(ops, scalar_types, mxfp4_qdq, mxfp8_qdq, trace_qdq),
+        _patch_moe_marlin_gemm(ops, scalar_types, mxfp4_qdq, mxfp8_qdq, trace_qdq),
     ]
 
     # Fix up any modules that imported these via
@@ -143,6 +150,6 @@ def apply_patches():
             pass
 
     logger.warning(
-        "QDQ patches applied: %s (MXFP4)",
+        "QDQ patches applied: %s (MXFP4, MXFP8)",
         ", ".join(name for name, _, _ in patches),
     )
