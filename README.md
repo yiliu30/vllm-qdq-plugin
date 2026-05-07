@@ -31,6 +31,9 @@ VLLM_QDQ=1 vllm serve /path/to/model --tensor-parallel-size 2
 
 # Enable trace logging (prints shape/dtype for each QDQ call)
 VLLM_QDQ=1 VLLM_QDQ_TRACE=1 vllm serve /path/to/model
+
+# Force MXFP4 QDQ on Marlin MoE when dtype-based detection is not enough
+VLLM_QDQ=1 VLLM_MARLIN_MOE_QDQ_MODE=FORCE_MXFP4 vllm serve /path/to/model
 ```
 
 ### Environment Variables
@@ -39,6 +42,7 @@ VLLM_QDQ=1 VLLM_QDQ_TRACE=1 vllm serve /path/to/model
 |---|---|---|
 | `VLLM_QDQ` | `0` | Set to `1` to enable QDQ |
 | `VLLM_QDQ_TRACE` | `0` | Set to `1` to print trace lines (up to 200) |
+| `VLLM_MARLIN_MOE_QDQ_MODE` | `0` | Set to `FORCE_MXFP4` to apply MXFP4 QDQ in `moe_wna16_marlin_gemm` when dtype-based routing is not sufficient. Matching is case-insensitive. |
 
 ## Support Status
 

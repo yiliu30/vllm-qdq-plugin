@@ -6,17 +6,18 @@ Registered as a vllm.general_plugins entry point. Activated by VLLM_QDQ=1.
 
 import logging
 
+from . import envs
+
 logger = logging.getLogger(__name__)
 
 
 def register():
     """Called by vLLM plugin loader in every process (main + workers)."""
-    import os
 
-    if os.environ.get("VLLM_QDQ", "0") != "1":
+    if not envs.VLLM_QDQ:
         return
 
     from .patch import apply_patches
 
     apply_patches()
-    logger.info("vllm-qdq-plugin: patches applied (VLLM_QDQ=1)")
+    logger.info("vllm-qdq-plugin: patches applied (VLLM_QDQ enabled)")

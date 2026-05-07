@@ -5,12 +5,14 @@ Wraps marlin_gemm and moe_wna16_marlin_gemm at the ops level so that
 every call site (dense, MoE gate+up, MoE down) gets QDQ automatically.
 """
 
-import logging
 import sys
 
 import torch
 
 from vllm.logger import init_logger
+
+from . import envs
+
 logger = init_logger(__name__)
 
 def _patch_marlin_gemm(ops, scalar_types, mxfp4_qdq, mxfp8_qdq, trace_qdq):
@@ -48,9 +50,15 @@ def _patch_marlin_gemm(ops, scalar_types, mxfp4_qdq, mxfp8_qdq, trace_qdq):
         if b_q_type == scalar_types.float4_e2m1f and a.dim() == 2:
             trace_qdq("marlin_gemm", a.shape, a.dtype)
             a = mxfp4_qdq(a, group_size=32)
+            logger.warning_once(
+                "Applied MXFP4 QDQ to marlin_gemm as b_q_type is float4_e2m1f"
+            )
         elif b_q_type == scalar_types.float8_e4m3fn and a.dim() == 2:
             trace_qdq("marlin_gemm", a.shape, a.dtype)
             a = mxfp8_qdq(a, group_size=32)
+            logger.warning_once(
+                "Applied MXFP8 QDQ to marlin_gemm as b_q_type is float8_e4m3fn"
+            )
 
         return _orig(
             a, c, b_q_weight, b_bias, b_scales, a_scales, global_scale,
@@ -110,6 +118,13 @@ def _patch_moe_marlin_gemm(ops, scalar_types, mxfp4_qdq, mxfp8_qdq, trace_qdq):
         elif b_q_type == scalar_types.float8_e4m3fn and input.dim() == 2:
             trace_qdq("moe_wna16_marlin_gemm", input.shape, input.dtype)
             input = mxfp8_qdq(input, group_size=32)
+        elif input.dim() == 2 and envs.VLLM_MARLIN_MOE_QDQ_MODE == "FORCE_MXFP4":
+            trace_qdq("moe_wna16_marlin_gemm", input.shape, input.dtype)
+            input = mxfp4_qdq(input, group_size=32)
+            logger.warning_once(
+                "Applied MXFP4 QDQ to moe_wna16_marlin_gemm due to "
+                "FORCE_MXFP4 mode"
+            )
 
         return _orig(
             input, output, b_qweight, b_bias, b_scales, a_scales,
