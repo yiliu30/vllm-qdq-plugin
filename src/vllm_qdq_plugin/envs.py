@@ -14,7 +14,7 @@
 import os
 from collections.abc import Callable
 from typing import Any
-
+from functools import lru_cache
 _TRUTHY_ENV_VALUES = ("1", "true", "yes")
 
 
@@ -84,7 +84,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
 }
 
-
+@lru_cache(maxsize=None)
 def __getattr__(name: str):
     # lazy evaluation of environment variables
     if name in environment_variables:
