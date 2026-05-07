@@ -111,7 +111,7 @@ def _patch_moe_marlin_gemm(ops, scalar_types, mxfp4_qdq, mxfp8_qdq, trace_qdq):
         thread_n: int = -1,
         blocks_per_sm: int = -1,
     ) -> torch.Tensor:
-        # For the DSV4 W4A4 emulatiom, we do Q-DQ on the activation regardless of b_q_type, since the kernel will internally treat it as MXFP4.
+# For the DSV4 W4A4 emulation, we do Q-DQ on the activation regardless of b_q_type, since the kernel will internally treat it as MXFP4.
         if input.dim() == 2 and envs.VLLM_MARLIN_MOE_QDQ_MODE == "FORCE_MXFP4":
             trace_qdq("moe_wna16_marlin_gemm", input.shape, input.dtype)
             input = mxfp4_qdq(input, group_size=32)
