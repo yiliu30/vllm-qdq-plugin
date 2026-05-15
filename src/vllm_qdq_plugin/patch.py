@@ -140,7 +140,10 @@ def _patch_mla_kv_b_proj_dtype():
     regardless of what vllm's dtype-detection code computed.
     """
     import functools
-    from vllm.model_executor.layers.attention.mla_attention import MLACommonImpl
+    try:
+        from vllm.model_executor.layers.attention.mla_attention import MLACommonImpl
+    except ImportError:
+        return
 
     _orig = MLACommonImpl._compute_prefill_context
 
