@@ -18,8 +18,8 @@ FLOAT8_E8M0_MAX_EXP = 127
 # and scale = 2^(n−8), x/scale can reach up to 512, so clamp to ±448 is required.
 FLOAT8_E4M3_MAX_UNBIASED_EXP = 8
 FLOAT8_E4M3FN_MAX = 448.0
-FLOAT8_E4M3_MIN_NORMAL = 2.0 ** -6
-FLOAT8_E4M3_SUBNORMAL_STEP = 2.0 ** -9
+FLOAT8_E4M3_MIN_NORMAL = 2.0**-6
+FLOAT8_E4M3_SUBNORMAL_STEP = 2.0**-9
 
 
 def _round_half_to_even(x: torch.Tensor) -> torch.Tensor:
@@ -50,7 +50,10 @@ def _quantize_to_e4m3fn_no_fp8_dtype(x: torch.Tensor) -> torch.Tensor:
     ax = torch.clamp(ax, 0.0, FLOAT8_E4M3FN_MAX)
 
     # Subnormal region: values are multiples of 2^-9 in [0, 7*2^-9].
-    sub_q = _round_half_to_even(ax / FLOAT8_E4M3_SUBNORMAL_STEP) * FLOAT8_E4M3_SUBNORMAL_STEP
+    sub_q = (
+        _round_half_to_even(ax / FLOAT8_E4M3_SUBNORMAL_STEP)
+        * FLOAT8_E4M3_SUBNORMAL_STEP
+    )
     sub_q = torch.clamp(sub_q, 0.0, 7.0 * FLOAT8_E4M3_SUBNORMAL_STEP)
 
     # Normal region: step is 2^(e-3), where e=floor(log2(|x|)) in [-6, 8].
