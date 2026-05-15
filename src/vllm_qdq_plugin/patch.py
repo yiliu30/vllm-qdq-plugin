@@ -147,7 +147,7 @@ def _patch_mla_kv_b_proj_dtype():
     @functools.wraps(_orig)
     def _patched(self, *args, **kwargs):
         kv_b_proj = self.kv_b_proj
-        real_weight = kv_b_proj._parameters.get('weight')
+        real_weight = getattr(kv_b_proj, 'weight', None)
         if (
             real_weight is not None
             and not real_weight.dtype.is_floating_point
