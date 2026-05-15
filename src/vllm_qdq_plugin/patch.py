@@ -47,13 +47,21 @@ def _patch_marlin_gemm(ops, scalar_types, mxfp4_qdq, mxfp8_qdq, trace_qdq):
         is_zp_float: bool = False,
     ) -> torch.Tensor:
         # MXFP4 QDQ — extend with elif for other dtypes
-        if b_q_type == scalar_types.float4_e2m1f and a.dim() == 2:
+        if (
+            b_q_type == scalar_types.float4_e2m1f
+            and a.dim() == 2
+            and a.dtype in (torch.float16, torch.bfloat16)
+        ):
             trace_qdq("marlin_gemm", a.shape, a.dtype)
             a = mxfp4_qdq(a, group_size=32)
             logger.warning_once(
                 "Applied MXFP4 QDQ to marlin_gemm as b_q_type is float4_e2m1f"
             )
-        elif b_q_type == scalar_types.float8_e4m3fn and a.dim() == 2:
+        elif (
+            b_q_type == scalar_types.float8_e4m3fn
+            and a.dim() == 2
+            and a.dtype in (torch.float16, torch.bfloat16)
+        ):
             trace_qdq("marlin_gemm", a.shape, a.dtype)
             a = mxfp8_qdq(a, group_size=32)
             logger.warning_once(
@@ -141,6 +149,58 @@ def _patch_moe_marlin_gemm(ops, scalar_types, mxfp4_qdq, mxfp8_qdq, trace_qdq):
     return ("moe_wna16_marlin_gemm", _orig, _patched)
 
 
+def _patch_mla_kv_b_proj_dtype():
+    """Fix MLACommonImpl._compute_prefill_context dtype detection for packed
+    quantized weights (e.g. MXFP4 Marlin stores weights as torch.int32).
+
+    vllm reads ``kv_b_proj.weight.dtype`` to decide what dtype to cast the
+    activation ``kv_c_normed`` to.  For packed/non-float weight formats this
+    produces a wrong cast (int32, float8, etc.) which then crashes the kernel.
+
+    Fix: wrap ``kv_b_proj.forward`` to cast any non-float activation back to
+    ``params_dtype`` before the actual computation.  This corrects the dtype
+    regardless of what vllm's dtype-detection code computed.
+    """
+    import functools
+    try:
+        from vllm.model_executor.layers.attention.mla_attention import MLACommonImpl
+    except ImportError:
+        return
+
+    _orig = MLACommonImpl._compute_prefill_context
+
+    @functools.wraps(_orig)
+    def _patched(self, *args, **kwargs):
+        kv_b_proj = self.kv_b_proj
+        real_weight = getattr(kv_b_proj, 'weight', None)
+        if (
+            real_weight is not None
+            and not real_weight.dtype.is_floating_point
+            and hasattr(kv_b_proj, 'params_dtype')
+        ):
+            compute_dtype = kv_b_proj.params_dtype
+            orig_forward = kv_b_proj.forward
+
+            @functools.wraps(orig_forward)
+            def _fixed_forward(input_, *fwd_args, **fwd_kwargs):
+                if not input_.dtype.is_floating_point:
+                    input_ = input_.to(compute_dtype)
+                return orig_forward(input_, *fwd_args, **fwd_kwargs)
+
+            kv_b_proj.forward = _fixed_forward
+            try:
+                return _orig(self, *args, **kwargs)
+            finally:
+                kv_b_proj.forward = orig_forward
+        return _orig(self, *args, **kwargs)
+
+    MLACommonImpl._compute_prefill_context = _patched
+    logger.warning(
+        "QDQ patch applied: MLACommonImpl._compute_prefill_context "
+        "(packed-weight dtype fix for MXFP4/NVFP4)"
+    )
+
+
 def apply_patches():
     """Patch ops.marlin_gemm and ops.moe_wna16_marlin_gemm with QDQ wrappers."""
     import vllm._custom_ops as ops
@@ -149,6 +209,8 @@ def apply_patches():
     from .qdq.mxfp4 import mxfp4_qdq
     from .qdq.mxfp8 import mxfp8_qdq
     from .trace import trace_qdq
+
+    _patch_mla_kv_b_proj_dtype()
 
     patches = [
         _patch_marlin_gemm(ops, scalar_types, mxfp4_qdq, mxfp8_qdq, trace_qdq),
