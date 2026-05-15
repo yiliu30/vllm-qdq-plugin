@@ -14,6 +14,7 @@
 import os
 from collections.abc import Callable
 from typing import Any
+
 _TRUTHY_ENV_VALUES = ("1", "true", "yes")
 
 
@@ -82,6 +83,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
         case_sensitive=False,
     ),
 }
+
 
 def __getattr__(name: str):
     # lazy evaluation of environment variables

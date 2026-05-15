@@ -77,9 +77,7 @@ def _fp_to_fp4_simulate(
         round_away * new_exp_away + round_close * new_exp_close + tie * new_exp_tie
     )
     new_mantissa = round_away * new_mantissa_away + round_close * new_mantissa_close
-    new_mantissa = new_mantissa + (new_exp > (2 + half_exp_bias)) * (
-        new_mantissa == 0
-    )
+    new_mantissa = new_mantissa + (new_exp > (2 + half_exp_bias)) * (new_mantissa == 0)
 
     new_exp = (new_exp >= (half_exp_bias - 2)) * torch.clamp(
         new_exp, half_exp_bias - 2, half_exp_bias + 2
@@ -141,9 +139,9 @@ def mxfp4_qdq(x: torch.Tensor, group_size: int = 32) -> torch.Tensor:
     block_max_uint = torch.bitwise_and(block_max + val_to_add, sign_exponent_mask)
     block_max = block_max_uint.to(torch.uint16).view(orig_dtype)
 
-    scale_exp = FLOAT8_E8M0_MAX_EXP + torch.floor(torch.log2(block_max)).to(
-        torch.int32
-    ) - 2
+    scale_exp = (
+        FLOAT8_E8M0_MAX_EXP + torch.floor(torch.log2(block_max)).to(torch.int32) - 2
+    )
     scale_exp = torch.clamp(scale_exp, 0, 2 * FLOAT8_E8M0_MAX_EXP)
     scale = (2.0 ** (scale_exp - FLOAT8_E8M0_MAX_EXP)).to(orig_dtype)
 

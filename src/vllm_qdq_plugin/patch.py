@@ -15,6 +15,7 @@ from . import envs
 
 logger = init_logger(__name__)
 
+
 def _patch_marlin_gemm(ops, scalar_types, mxfp4_qdq, mxfp8_qdq, trace_qdq):
     """Patch ops.marlin_gemm with QDQ wrapper.
 
@@ -69,9 +70,25 @@ def _patch_marlin_gemm(ops, scalar_types, mxfp4_qdq, mxfp8_qdq, trace_qdq):
             )
 
         return _orig(
-            a, c, b_q_weight, b_bias, b_scales, a_scales, global_scale,
-            b_zeros, g_idx, perm, workspace, b_q_type, size_m, size_n,
-            size_k, is_k_full, use_atomic_add, use_fp32_reduce, is_zp_float,
+            a,
+            c,
+            b_q_weight,
+            b_bias,
+            b_scales,
+            a_scales,
+            global_scale,
+            b_zeros,
+            g_idx,
+            perm,
+            workspace,
+            b_q_type,
+            size_m,
+            size_n,
+            size_k,
+            is_k_full,
+            use_atomic_add,
+            use_fp32_reduce,
+            is_zp_float,
         )
 
     ops.marlin_gemm = _patched
@@ -119,7 +136,7 @@ def _patch_moe_marlin_gemm(ops, scalar_types, mxfp4_qdq, mxfp8_qdq, trace_qdq):
         thread_n: int = -1,
         blocks_per_sm: int = -1,
     ) -> torch.Tensor:
-# For the DSV4 W4A4 emulation, we do Q-DQ on the activation regardless of b_q_type, since the kernel will internally treat it as MXFP4.
+        # For the DSV4 W4A4 emulation, we do Q-DQ on the activation regardless of b_q_type, since the kernel will internally treat it as MXFP4.
         if input.dim() == 2 and envs.VLLM_MARLIN_MOE_QDQ_MODE == "FORCE_MXFP4":
             trace_qdq("moe_wna16_marlin_gemm", input.shape, input.dtype)
             input = mxfp4_qdq(input, group_size=32)
@@ -134,15 +151,36 @@ def _patch_moe_marlin_gemm(ops, scalar_types, mxfp4_qdq, mxfp8_qdq, trace_qdq):
             trace_qdq("moe_wna16_marlin_gemm", input.shape, input.dtype)
             input = mxfp8_qdq(input, group_size=32)
 
-
         return _orig(
-            input, output, b_qweight, b_bias, b_scales, a_scales,
-            global_scale, b_qzeros, g_idx, perm, workspace,
-            sorted_token_ids, expert_ids, num_tokens_past_padded,
-            topk_weights, moe_block_size, top_k, mul_topk_weights,
-            b_q_type, size_m, size_n, size_k, is_k_full,
-            use_atomic_add, use_fp32_reduce, is_zp_float,
-            thread_k, thread_n, blocks_per_sm,
+            input,
+            output,
+            b_qweight,
+            b_bias,
+            b_scales,
+            a_scales,
+            global_scale,
+            b_qzeros,
+            g_idx,
+            perm,
+            workspace,
+            sorted_token_ids,
+            expert_ids,
+            num_tokens_past_padded,
+            topk_weights,
+            moe_block_size,
+            top_k,
+            mul_topk_weights,
+            b_q_type,
+            size_m,
+            size_n,
+            size_k,
+            is_k_full,
+            use_atomic_add,
+            use_fp32_reduce,
+            is_zp_float,
+            thread_k,
+            thread_n,
+            blocks_per_sm,
         )
 
     ops.moe_wna16_marlin_gemm = _patched
@@ -162,6 +200,7 @@ def _patch_mla_kv_b_proj_dtype():
     regardless of what vllm's dtype-detection code computed.
     """
     import functools
+
     try:
         from vllm.model_executor.layers.attention.mla_attention import MLACommonImpl
     except ImportError:
@@ -172,11 +211,11 @@ def _patch_mla_kv_b_proj_dtype():
     @functools.wraps(_orig)
     def _patched(self, *args, **kwargs):
         kv_b_proj = self.kv_b_proj
-        real_weight = getattr(kv_b_proj, 'weight', None)
+        real_weight = getattr(kv_b_proj, "weight", None)
         if (
             real_weight is not None
             and not real_weight.dtype.is_floating_point
-            and hasattr(kv_b_proj, 'params_dtype')
+            and hasattr(kv_b_proj, "params_dtype")
         ):
             compute_dtype = kv_b_proj.params_dtype
             orig_forward = kv_b_proj.forward
