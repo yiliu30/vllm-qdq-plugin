@@ -8,6 +8,9 @@ dependencies = ["torch"]
 [project.entry-points."vllm.general_plugins"]
 qdq = "vllm_qdq_plugin:register"
 
+[project.entry-points."vllm_omni.general_plugins"]
+sage3_attn = "vllm_qdq_plugin:register_omni"
+
 [build-system]
 requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
