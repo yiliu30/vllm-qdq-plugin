@@ -107,7 +107,6 @@ DIFFUSION_ATTENTION_BACKEND=TORCH_SDPA python ...
 | `VLLM_SAGE3_TRITON` | `0` | Set to `1` to enable sage3 Triton backend override |
 | `SAGE3_QUANT_FORMAT` | `mxfp4` | Quantization config for K/V (`mxfp4`, `nvfp4`, `mxfp8_s1`, `mxfp4_s1`) |
 | `SAGE3_ACC_DTYPE` | `fp32` | Accumulator dtype (`fp32`, `bf16_both_dot`, `bf16_pv_only`, etc.) |
-| `SAGE3_STANDALONE_PATH` | `/home/yiliu7/workspace/sage-attention-inner/standalone` | Path to sage3 standalone package |
 
 ### Notes
 
