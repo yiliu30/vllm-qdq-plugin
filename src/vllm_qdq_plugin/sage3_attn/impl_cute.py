@@ -25,26 +25,23 @@ logger = init_logger(__name__)
 # ── sage3 kernel import ──
 
 _sage3_fn = None
+_sage3_cute_fn = None
 
 
-def _load_sage3():
-    """Lazy-load sage3 standalone from configured path."""
-    global _sage3_fn
-    if _sage3_fn is not None:
-        return _sage3_fn
+def _load_sage3_cute():
+    """Lazy-load sage3 cute kernel from configured path."""
+    global _sage3_cute_fn
+    if _sage3_cute_fn is not None:
+        return _sage3_cute_fn
 
-    sage3_path = envs.SAGE3_STANDALONE_PATH
-    if sage3_path not in sys.path:
-        sys.path.insert(0, sage3_path)
+    from sageattn3 import sageattn3_blackwell
 
-    from sage3 import sageattn3_standalone
-
-    _sage3_fn = sageattn3_standalone
-    logger.info("[sage3_attn plugin]: loaded sage3 kernel from %s", sage3_path)
-    return _sage3_fn
+    _sage3_cute_fn = sageattn3_blackwell
+    logger.info("[sage3_attn plugin]: loaded sage3 cute kernel")
+    return _sage3_cute_fn
 
 
-class Sage3TritonImpl(AttentionImpl):
+class Sage3CuteImpl(AttentionImpl):
     """Attention implementation using sage3 Triton kernel."""
 
     def __init__(
@@ -60,23 +57,9 @@ class Sage3TritonImpl(AttentionImpl):
     ) -> None:
         self.causal = causal
         self.softmax_scale = softmax_scale
-
-        # Configuration from env vars
-        self._config = envs.SAGE3_QUANT_FORMAT
-        self._acc_dtype = envs.SAGE3_ACC_DTYPE
-
-        # Override from backend_kwargs if provided
-        if backend_kwargs:
-            self._config = backend_kwargs.pop("sage3_config", self._config)
-            self._acc_dtype = backend_kwargs.pop("sage3_acc_dtype", self._acc_dtype)
-            if backend_kwargs:
-                logger.warning(
-                    "Sage3TritonImpl ignoring backend_kwargs: %s",
-                    list(backend_kwargs.keys()),
-                )
-
+        assert not self.causal, "sage3 cute kernel does not support causal attention"
         # Eagerly load sage3
-        _load_sage3()
+        _load_sage3_cute()
 
     def forward_cuda(
         self,
@@ -101,13 +84,10 @@ class Sage3TritonImpl(AttentionImpl):
         k = key.transpose(1, 2).contiguous()
         v = value.transpose(1, 2).contiguous()
 
-        out = _sage3_fn(
+        out = _sage3_cute_fn(
             q,
             k,
             v,
-            config=self._config,
             is_causal=self.causal,
-            sm_scale=self.softmax_scale,
-            acc_dtype=self._acc_dtype,
         )
         return out.transpose(1, 2)  # back to NHD
