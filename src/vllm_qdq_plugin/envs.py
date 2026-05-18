@@ -87,10 +87,6 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_SAGE3_CUTE": lambda: _env_flag("VLLM_SAGE3_CUTE"),
     "SAGE3_QUANT_FORMAT": lambda: os.getenv("SAGE3_QUANT_FORMAT", "mxfp4"),
     "SAGE3_ACC_DTYPE": lambda: os.getenv("SAGE3_ACC_DTYPE", "fp32"),
-    "SAGE3_STANDALONE_PATH": lambda: os.getenv(
-        "SAGE3_STANDALONE_PATH",
-        "/home/yiliu7/workspace/sage-attention-inner/standalone",
-    ),
 }
 
 

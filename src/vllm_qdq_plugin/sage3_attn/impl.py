@@ -6,8 +6,6 @@ Imports the sage3 standalone kernel and wraps it with:
 - Cross-attention fallback to torch SDPA (different Q/K seq lengths)
 """
 
-import sys
-
 import torch
 import torch.nn.functional as F
 
@@ -19,29 +17,9 @@ from vllm_omni.diffusion.attention.backends.abstract import (
 )
 
 from .. import envs
+from .sage3 import sageattn3_standalone as _sage3_fn
 
 logger = init_logger(__name__)
-
-# ── sage3 kernel import ──
-
-_sage3_fn = None
-
-
-def _load_sage3():
-    """Lazy-load sage3 standalone from configured path."""
-    global _sage3_fn
-    if _sage3_fn is not None:
-        return _sage3_fn
-
-    sage3_path = envs.SAGE3_STANDALONE_PATH
-    if sage3_path not in sys.path:
-        sys.path.insert(0, sage3_path)
-
-    from sage3 import sageattn3_standalone
-
-    _sage3_fn = sageattn3_standalone
-    logger.info("[sage3_attn plugin]: loaded sage3 kernel from %s", sage3_path)
-    return _sage3_fn
 
 
 class Sage3TritonImpl(AttentionImpl):
@@ -74,9 +52,6 @@ class Sage3TritonImpl(AttentionImpl):
                     "Sage3TritonImpl ignoring backend_kwargs: %s",
                     list(backend_kwargs.keys()),
                 )
-
-        # Eagerly load sage3
-        _load_sage3()
 
     def forward_cuda(
         self,
