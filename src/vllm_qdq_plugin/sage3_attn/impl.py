@@ -88,6 +88,7 @@ class Sage3TritonImpl(AttentionImpl):
         # Input layout: NHD = [B, N, H, D]
         return self._forward_sage3(query, key, value)
 
+    @torch.compiler.disable()
     def _forward_sage3(
         self,
         query: torch.Tensor,
@@ -99,15 +100,6 @@ class Sage3TritonImpl(AttentionImpl):
         q = query.transpose(1, 2).contiguous()
         k = key.transpose(1, 2).contiguous()
         v = value.transpose(1, 2).contiguous()
-
-        # Cross-attention (different Q/K seq lengths) — sage3 can't handle
-        if q.shape[2] != k.shape[2]:
-            out = F.scaled_dot_product_attention(
-                q, k, v,
-                is_causal=self.causal,
-                scale=self.softmax_scale,
-            )
-            return out.transpose(1, 2)
 
         out = _sage3_fn(
             q, k, v,
