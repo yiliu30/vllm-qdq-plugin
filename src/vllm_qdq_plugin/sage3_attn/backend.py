@@ -13,7 +13,7 @@ class Sage3TritonBackend(AttentionBackend):
     Overrides the in-tree SAGE_ATTN backend.
     """
 
-    accept_output_buffer: bool = True
+    accept_output_buffer: bool = False
 
     @staticmethod
     def get_supported_head_sizes() -> list[int]:
@@ -28,3 +28,10 @@ class Sage3TritonBackend(AttentionBackend):
         from .impl import Sage3TritonImpl
 
         return Sage3TritonImpl
+
+class Sage3CuteBackend(Sage3TritonBackend):
+    @staticmethod
+    def get_impl_cls() -> type:
+        from .impl_cute import Sage3CuteImpl
+
+        return Sage3CuteImpl

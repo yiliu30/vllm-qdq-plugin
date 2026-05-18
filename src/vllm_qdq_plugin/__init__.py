@@ -24,15 +24,8 @@ def register():
     logger.info("vllm-qdq-plugin: patches applied (VLLM_QDQ enabled)")
 
 
-def register_omni():
-    """Called by vllm-omni plugin loader in diffusion workers.
 
-    Conditionally overrides SAGE_ATTN backend with sage3 Triton implementation.
-    When VLLM_SAGE3_TRITON=0 (default), does nothing — original in-tree backend used.
-    """
-    if not envs.VLLM_SAGE3_TRITON:
-        return
-
+def register_omni_sage3_triton():
     try:
         from vllm_omni.diffusion.attention.backends.registry import (
             DiffusionAttentionBackendEnum,
@@ -53,3 +46,44 @@ def register_omni():
             "vllm_omni not available (%s)",
             e,
         )
+
+def register_omni_sage3_cute():
+    try:
+        from vllm_omni.diffusion.attention.backends.registry import (
+            DiffusionAttentionBackendEnum,
+            register_diffusion_backend,
+        )
+
+        register_diffusion_backend(
+            DiffusionAttentionBackendEnum.SAGE_ATTN,
+            "vllm_qdq_plugin.sage3_attn.backend.Sage3CuteBackend",
+        )
+        logger.warning(
+            "vllm-qdq-plugin: registered sage3 cute backend as SAGE_ATTN "
+            "(VLLM_SAGE3_CUTE=1)"
+        )
+    except ImportError as e:
+        logger.warning(
+            "vllm-qdq-plugin: cannot register sage3 cute backend — "
+            "vllm_omni not available (%s)",
+            e,
+        )
+def register_omni():
+    """Called by vllm-omni plugin loader in diffusion workers.
+
+    Conditionally overrides SAGE_ATTN backend with sage3 Triton implementation.
+    When VLLM_SAGE3_TRITON=0 (default), does nothing — original in-tree backend used.
+    """
+    if envs.VLLM_SAGE3_TRITON:
+        register_omni_sage3_triton()
+        logger.warning_once("vllm-qdq-plugin: registered sage3 Triton backend for vllm-omni")
+    elif envs.VLLM_SAGE3_CUTE:
+        register_omni_sage3_cute()
+        logger.warning_once("vllm-qdq-plugin: registered sage3 cute backend for vllm-omni")
+    else:
+        logger.warning_once(
+            "vllm-qdq-plugin: no sage3 backend registered for vllm-omni — set VLLM_SAGE3_TRITON=1 or VLLM_SAGE3_CUTE=1 to enable"
+        )   
+
+
+
