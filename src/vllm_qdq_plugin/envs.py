@@ -82,6 +82,14 @@ environment_variables: dict[str, Callable[[], Any]] = {
         choices=["0", "FORCE_MXFP4"],
         case_sensitive=False,
     ),
+    # sage3 Triton attention plugin
+    "VLLM_SAGE3_TRITON": lambda: _env_flag("VLLM_SAGE3_TRITON"),
+    "SAGE3_QUANT_FORMAT": lambda: os.getenv("SAGE3_QUANT_FORMAT", "mxfp4"),
+    "SAGE3_ACC_DTYPE": lambda: os.getenv("SAGE3_ACC_DTYPE", "fp32"),
+    "SAGE3_STANDALONE_PATH": lambda: os.getenv(
+        "SAGE3_STANDALONE_PATH",
+        "/home/yiliu7/workspace/sage-attention-inner/standalone",
+    ),
 }
 
 
