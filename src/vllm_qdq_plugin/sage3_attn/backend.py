@@ -29,6 +29,7 @@ class Sage3TritonBackend(AttentionBackend):
 
         return Sage3TritonImpl
 
+
 class Sage3CuteBackend(Sage3TritonBackend):
     @staticmethod
     def get_impl_cls() -> type:

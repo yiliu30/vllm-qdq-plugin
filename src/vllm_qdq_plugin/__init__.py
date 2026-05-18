@@ -24,7 +24,6 @@ def register():
     logger.info("vllm-qdq-plugin: patches applied (VLLM_QDQ enabled)")
 
 
-
 def register_omni_sage3_triton():
     try:
         from vllm_omni.diffusion.attention.backends.registry import (
@@ -47,6 +46,7 @@ def register_omni_sage3_triton():
             e,
         )
 
+
 def register_omni_sage3_cute():
     try:
         from vllm_omni.diffusion.attention.backends.registry import (
@@ -68,6 +68,8 @@ def register_omni_sage3_cute():
             "vllm_omni not available (%s)",
             e,
         )
+
+
 def register_omni():
     """Called by vllm-omni plugin loader in diffusion workers.
 
@@ -76,14 +78,15 @@ def register_omni():
     """
     if envs.VLLM_SAGE3_TRITON:
         register_omni_sage3_triton()
-        logger.warning_once("vllm-qdq-plugin: registered sage3 Triton backend for vllm-omni")
+        logger.warning_once(
+            "vllm-qdq-plugin: registered sage3 Triton backend for vllm-omni"
+        )
     elif envs.VLLM_SAGE3_CUTE:
         register_omni_sage3_cute()
-        logger.warning_once("vllm-qdq-plugin: registered sage3 cute backend for vllm-omni")
+        logger.warning_once(
+            "vllm-qdq-plugin: registered sage3 cute backend for vllm-omni"
+        )
     else:
         logger.warning_once(
             "vllm-qdq-plugin: no sage3 backend registered for vllm-omni — set VLLM_SAGE3_TRITON=1 or VLLM_SAGE3_CUTE=1 to enable"
-        )   
-
-
-
+        )

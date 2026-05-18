@@ -102,7 +102,9 @@ class Sage3TritonImpl(AttentionImpl):
         v = value.transpose(1, 2).contiguous()
 
         out = _sage3_fn(
-            q, k, v,
+            q,
+            k,
+            v,
             config=self._config,
             is_causal=self.causal,
             sm_scale=self.softmax_scale,
