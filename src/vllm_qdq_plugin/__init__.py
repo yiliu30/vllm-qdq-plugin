@@ -85,6 +85,14 @@ def register_omni_sparge_attn():
             envs.SPARGE_ATTN_REPO,
         )
 
+    # XPU: put auto_round_kernel on sys.path if not already importable.
+    if importlib.util.find_spec("auto_round_kernel") is None and envs.SPARGE_ARK_PATH:
+        sys.path.insert(0, envs.SPARGE_ARK_PATH)
+        logger.warning(
+            "vllm-qdq-plugin: added SPARGE_ARK_PATH to sys.path (%s)",
+            envs.SPARGE_ARK_PATH,
+        )
+
     try:
         from vllm_omni.diffusion.attention.backends.registry import (
             DiffusionAttentionBackendEnum,

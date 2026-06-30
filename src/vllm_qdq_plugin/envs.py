@@ -110,6 +110,16 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "SPARGE_TOPK": lambda: os.getenv("SPARGE_TOPK", "1.0"),
     # CDF threshold when SPARGE_MODE=cdfthreshd (keep blocks up to this prob mass).
     "SPARGE_CDFTHRESHD": lambda: os.getenv("SPARGE_CDFTHRESHD", "0.98"),
+    # XPU sparse attention parameters (also used on CUDA when set).
+    "SPARGE_SMOOTH_K": lambda: _env_flag("SPARGE_SMOOTH_K", "1"),
+    "SPARGE_SIMTHRESHD1": lambda: os.getenv("SPARGE_SIMTHRESHD1", "-0.1"),
+    "SPARGE_ATTENTION_SINK": lambda: _env_flag("SPARGE_ATTENTION_SINK"),
+    "SPARGE_K_QUANT_GRANULARITY": lambda: os.getenv("SPARGE_K_QUANT_GRANULARITY", "64"),
+    # Path to the auto-round ARK extension (XPU sparse kernel); injected on sys.path
+    # when auto_round_kernel is not already importable.
+    "SPARGE_ARK_PATH": lambda: os.getenv("SPARGE_ARK_PATH", ""),
+    # Number of initial denoising steps to run dense (topk=1.0). 0 = always sparse.
+    "SPARGE_DENSE_STEPS": lambda: os.getenv("SPARGE_DENSE_STEPS", "0"),
 }
 
 
