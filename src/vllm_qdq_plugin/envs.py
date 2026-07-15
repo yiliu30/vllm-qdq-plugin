@@ -115,8 +115,21 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "SPARGE_SIMTHRESHD1": lambda: os.getenv("SPARGE_SIMTHRESHD1", "-0.1"),
     "SPARGE_ATTENTION_SINK": lambda: _env_flag("SPARGE_ATTENTION_SINK"),
     "SPARGE_K_QUANT_GRANULARITY": lambda: os.getenv("SPARGE_K_QUANT_GRANULARITY", "64"),
-    # Path to the auto-round ARK extension (XPU sparse kernel); injected on sys.path
-    # when auto_round_kernel is not already importable.
+    "SPARGE_XPU_TENSOR_LAYOUT": env_with_choices(
+        "SPARGE_XPU_TENSOR_LAYOUT",
+        default="NHD",
+        choices=["NHD", "HND"],
+        case_sensitive=False,
+    ),
+    "SPARGE_QUERY_TILE_TOKENS": lambda: os.getenv("SPARGE_QUERY_TILE_TOKENS"),
+    "SPARGE_SPARSE_Q_BLOCK_TOKENS": lambda: os.getenv("SPARGE_SPARSE_Q_BLOCK_TOKENS"),
+    "SPARGE_SPARSE_K_BLOCK_TOKENS": lambda: os.getenv("SPARGE_SPARSE_K_BLOCK_TOKENS"),
+    "SPARGE_DUMP_INPUTS": lambda: _env_flag("SPARGE_DUMP_INPUTS"),
+    "SPARGE_DUMP_DIR": lambda: os.getenv("SPARGE_DUMP_DIR", "/tmp/sparge_inputs"),
+    "SPARGE_DUMP_MAX": lambda: os.getenv("SPARGE_DUMP_MAX", "1"),
+    "SPARGE_DUMP_START_INDEX": lambda: os.getenv("SPARGE_DUMP_START_INDEX", "0"),
+    # Path to the local auto-round ARK checkout. When set, the plugin prepends it
+    # on sys.path so diffusion workers resolve auto_round_kernel from that tree.
     "SPARGE_ARK_PATH": lambda: os.getenv("SPARGE_ARK_PATH", ""),
     # Number of initial denoising steps to run dense (topk=1.0). 0 = always sparse.
     "SPARGE_DENSE_STEPS": lambda: os.getenv("SPARGE_DENSE_STEPS", "0"),

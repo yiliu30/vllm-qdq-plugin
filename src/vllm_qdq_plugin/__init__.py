@@ -5,11 +5,20 @@ Registered as a vllm.general_plugins entry point. Activated by VLLM_QDQ=1.
 Also provides sage3 Triton attention backend for vllm-omni (VLLM_SAGE3_TRITON=1).
 """
 
+from pathlib import Path
+
 from vllm.logger import init_logger
 
 from . import envs
 
 logger = init_logger(__name__)
+
+
+def _resolve_ark_sys_path(ark_path: str) -> str:
+    path = Path(ark_path).expanduser()
+    if path.name == "auto_round_kernel" and (path / "__init__.py").exists():
+        return str(path.parent)
+    return str(path)
 
 
 def register():
@@ -85,12 +94,17 @@ def register_omni_sparge_attn():
             envs.SPARGE_ATTN_REPO,
         )
 
-    # XPU: put auto_round_kernel on sys.path if not already importable.
-    if importlib.util.find_spec("auto_round_kernel") is None and envs.SPARGE_ARK_PATH:
-        sys.path.insert(0, envs.SPARGE_ARK_PATH)
+    # XPU: always put the requested local ARK checkout first so worker imports
+    # resolve against that tree even if another auto_round_kernel is installed.
+    if envs.SPARGE_ARK_PATH:
+        ark_sys_path = _resolve_ark_sys_path(envs.SPARGE_ARK_PATH)
+        if ark_sys_path in sys.path:
+            sys.path.remove(ark_sys_path)
+        sys.path.insert(0, ark_sys_path)
         logger.warning(
-            "vllm-qdq-plugin: added SPARGE_ARK_PATH to sys.path (%s)",
+            "vllm-qdq-plugin: prioritized SPARGE_ARK_PATH on sys.path (%s -> %s)",
             envs.SPARGE_ARK_PATH,
+            ark_sys_path,
         )
 
     try:
