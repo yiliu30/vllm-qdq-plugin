@@ -171,7 +171,6 @@ def main() -> int:
     print(f"[4] cross-attn valid input calls kernel: {im._sparge_called}  ({'PASS' if ok_cross else 'FAIL'})")
     if not ok_cross:
         failures.append("cross-attention input did not reach the SpargeAttn kernel")
-
     print()
     if failures:
         print("RESULT: FAIL")
