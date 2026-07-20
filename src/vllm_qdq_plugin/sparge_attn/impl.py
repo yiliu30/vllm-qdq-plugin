@@ -68,6 +68,7 @@ class SpargeAttnImpl(AttentionImpl):
 
         # Override from backend_kwargs if provided.
         if backend_kwargs:
+            backend_kwargs = backend_kwargs.copy()
             self._mode = backend_kwargs.pop("sparge_mode", self._mode)
             if "sparge_topk" in backend_kwargs:
                 self._topk = float(backend_kwargs.pop("sparge_topk"))
