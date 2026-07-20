@@ -92,6 +92,18 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "SAGE3_ROUTE_FILE": lambda: os.getenv("SAGE3_ROUTE_FILE", ""),
     # When truthy, log which quant config the router resolves per (layer, step).
     "SAGE3_ROUTE_DEBUG": lambda: _env_flag("SAGE3_ROUTE_DEBUG"),
+    # SageSLA attention backend.
+    "VLLM_SLA_ATTN": lambda: _env_flag("VLLM_SLA_ATTN"),
+    # Path to the SLA repo; injected on sys.path at registration when the
+    # SageSLA package is not already importable.
+    "SLA_REPO": lambda: os.getenv("SLA_REPO", ""),
+    "SLA_TOPK": lambda: os.getenv("SLA_TOPK", "0.2"),
+    "SLA_FEATURE_MAP": env_with_choices(
+        "SLA_FEATURE_MAP",
+        default="softmax",
+        choices=["elu", "relu", "softmax"],
+        case_sensitive=False,
+    ),
     # SpargeAttn block-sparse attention backend (mutually exclusive with sage3).
     "VLLM_SPARGE_ATTN": lambda: _env_flag("VLLM_SPARGE_ATTN"),
     # Path to the SpargeAttn repo; injected on sys.path at registration when the
