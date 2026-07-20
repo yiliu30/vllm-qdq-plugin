@@ -110,6 +110,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "SPARGE_TOPK": lambda: os.getenv("SPARGE_TOPK", "1.0"),
     # CDF threshold when SPARGE_MODE=cdfthreshd (keep blocks up to this prob mass).
     "SPARGE_CDFTHRESHD": lambda: os.getenv("SPARGE_CDFTHRESHD", "0.98"),
+    # When truthy, emit per-call Sparge context lines for debugging layer/shape routing.
+    "SPARGE_DEBUG_CONTEXT": lambda: _env_flag("SPARGE_DEBUG_CONTEXT"),
 }
 
 

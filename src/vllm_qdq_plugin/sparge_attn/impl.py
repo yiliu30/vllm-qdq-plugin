@@ -4,8 +4,8 @@
 Wraps the prebuilt ``spas_sage_attn`` block-sparse CUDA kernels with:
 - NHD↔HND layout transpose (vllm-omni uses NHD, SpargeAttn uses HND)
 - A guard chain that falls back to torch SDPA whenever SpargeAttn's hard
-  requirements are not met (fp32, cross-attention, seq_len < 128, head_dim
-  not in {64,128}, or an attention mask — which SpargeAttn silently ignores).
+  requirements are not met (fp32, seq_len < 128, head_dim not in {64,128}, or
+  an attention mask — which SpargeAttn silently ignores).
 """
 
 import torch
@@ -16,6 +16,11 @@ from vllm.logger import init_logger
 from vllm_omni.diffusion.attention.backends.abstract import (
     AttentionImpl,
     AttentionMetadata,
+)
+from vllm_omni.diffusion.attention.backends.sdpa import _maybe_reshape_attn_mask
+from vllm_omni.diffusion.forward_context import (
+    get_forward_context,
+    is_forward_context_available,
 )
 
 # Imported lazily (this module is only imported when SpargeAttn is selected), so a
@@ -52,14 +57,18 @@ class SpargeAttnImpl(AttentionImpl):
     ) -> None:
         self.causal = causal
         self.softmax_scale = softmax_scale
+        self.requires_gqa = num_heads != num_kv_heads
+        self.prefix = prefix or "<unknown>"
 
         # Configuration from env vars.
         self._mode = envs.SPARGE_MODE
         self._topk = float(envs.SPARGE_TOPK)
         self._cdfthreshd = float(envs.SPARGE_CDFTHRESHD)
+        self._debug_context = bool(envs.SPARGE_DEBUG_CONTEXT)
 
         # Override from backend_kwargs if provided.
         if backend_kwargs:
+            backend_kwargs = backend_kwargs.copy()
             self._mode = backend_kwargs.pop("sparge_mode", self._mode)
             if "sparge_topk" in backend_kwargs:
                 self._topk = float(backend_kwargs.pop("sparge_topk"))
@@ -89,12 +98,11 @@ class SpargeAttnImpl(AttentionImpl):
         has_mask = attn_metadata is not None and attn_metadata.attn_mask is not None
         if (
             query.dtype == torch.float32
-            or query.shape[1] != key.shape[1]  # cross-attention (N_q != N_k)
             or query.shape[1] < _MIN_SEQ_LEN  # seq_len too short
             or query.shape[-1] not in _SUPPORTED_HEAD_DIMS  # head_dim unsupported
             or has_mask  # SpargeAttn silently ignores masks
         ):
-            return self._forward_sdpa(query, key, value)
+            return self._forward_sdpa(query, key, value, attn_metadata)
         return self._forward_sparge(query, key, value)
 
     def _forward_sdpa(
@@ -102,14 +110,28 @@ class SpargeAttnImpl(AttentionImpl):
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
+        attn_metadata: AttentionMetadata | None = None,
     ) -> torch.Tensor:
         """SDPA fallback when SpargeAttn's constraints are not met."""
+        attention_mask = None
+        if attn_metadata:
+            attention_mask = _maybe_reshape_attn_mask(
+                query, key, attn_metadata.attn_mask, mask_mode="broadcast_k"
+            )
         # Input is NHD [B, N, H, D]; SDPA expects [B, H, N, D].
         q = query.transpose(1, 2)
         k = key.transpose(1, 2)
         v = value.transpose(1, 2)
+        enable_gqa = q.shape[1] != k.shape[1]
         out = F.scaled_dot_product_attention(
-            q, k, v, scale=self.softmax_scale, is_causal=False
+            q,
+            k,
+            v,
+            attn_mask=attention_mask,
+            dropout_p=0.0,
+            scale=self.softmax_scale,
+            is_causal=self.causal,
+            enable_gqa=enable_gqa,
         )
         return out.transpose(1, 2)  # back to NHD
 
@@ -121,18 +143,45 @@ class SpargeAttnImpl(AttentionImpl):
         value: torch.Tensor,
     ) -> torch.Tensor:
         """Forward using the SpargeAttn kernel."""
+        step_idx = None
+        if is_forward_context_available():
+            step_idx = get_forward_context().denoise_step_idx
         logger.warning_once(
             "SpargeAttnImpl: SpargeAttn kernel active (mode=%s, topk=%s, "
-            "cdfthreshd=%s) — q shape %s",
+            "cdfthreshd=%s, prefix=%s) — q shape %s",
             self._mode,
             self._topk,
             self._cdfthreshd,
+            self.prefix,
             tuple(query.shape),
         )
+        if self._debug_context:
+            print(
+                "SPARGE_CONTEXT "
+                f"prefix={self.prefix} "
+                f"step={step_idx} "
+                f"mode={self._mode} "
+                f"q_tokens={query.shape[1]} "
+                f"k_tokens={key.shape[1]} "
+                f"q_heads={query.shape[2]} "
+                f"kv_heads={key.shape[2]}"
+            )
         # SpargeAttn expects HND = [B, H, N, D], input is NHD = [B, N, H, D].
         q = query.transpose(1, 2).contiguous()
         k = key.transpose(1, 2).contiguous()
         v = value.transpose(1, 2).contiguous()
+        if q.shape[1] != k.shape[1]:
+            if q.shape[1] % k.shape[1] != 0:
+                logger.warning_once(
+                    "SpargeAttnImpl: q heads (%d) not divisible by kv heads (%d); "
+                    "falling back to SDPA for this shape",
+                    q.shape[1],
+                    k.shape[1],
+                )
+                return self._forward_sdpa(query, key, value)
+            repeat = q.shape[1] // k.shape[1]
+            k = k.repeat_interleave(repeat, dim=1).contiguous()
+            v = v.repeat_interleave(repeat, dim=1).contiguous()
 
         if self._mode == "cdfthreshd":
             out = spas_sage2_attn_meansim_cuda(
