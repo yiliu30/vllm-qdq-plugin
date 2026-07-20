@@ -18,6 +18,10 @@ from vllm_omni.diffusion.attention.backends.abstract import (
     AttentionMetadata,
 )
 from vllm_omni.diffusion.attention.backends.sdpa import _maybe_reshape_attn_mask
+from vllm_omni.diffusion.forward_context import (
+    get_forward_context,
+    is_forward_context_available,
+)
 
 # Imported lazily (this module is only imported when SpargeAttn is selected), so a
 # missing/unbuilt spas_sage_attn surfaces a clear ImportError only at that point.
@@ -54,11 +58,13 @@ class SpargeAttnImpl(AttentionImpl):
         self.causal = causal
         self.softmax_scale = softmax_scale
         self.requires_gqa = num_heads != num_kv_heads
+        self.prefix = prefix or "<unknown>"
 
         # Configuration from env vars.
         self._mode = envs.SPARGE_MODE
         self._topk = float(envs.SPARGE_TOPK)
         self._cdfthreshd = float(envs.SPARGE_CDFTHRESHD)
+        self._debug_context = bool(envs.SPARGE_DEBUG_CONTEXT)
 
         # Override from backend_kwargs if provided.
         if backend_kwargs:
@@ -136,14 +142,29 @@ class SpargeAttnImpl(AttentionImpl):
         value: torch.Tensor,
     ) -> torch.Tensor:
         """Forward using the SpargeAttn kernel."""
+        step_idx = None
+        if is_forward_context_available():
+            step_idx = get_forward_context().denoise_step_idx
         logger.warning_once(
             "SpargeAttnImpl: SpargeAttn kernel active (mode=%s, topk=%s, "
-            "cdfthreshd=%s) — q shape %s",
+            "cdfthreshd=%s, prefix=%s) — q shape %s",
             self._mode,
             self._topk,
             self._cdfthreshd,
+            self.prefix,
             tuple(query.shape),
         )
+        if self._debug_context:
+            print(
+                "SPARGE_CONTEXT "
+                f"prefix={self.prefix} "
+                f"step={step_idx} "
+                f"mode={self._mode} "
+                f"q_tokens={query.shape[1]} "
+                f"k_tokens={key.shape[1]} "
+                f"q_heads={query.shape[2]} "
+                f"kv_heads={key.shape[2]}"
+            )
         # SpargeAttn expects HND = [B, H, N, D], input is NHD = [B, N, H, D].
         q = query.transpose(1, 2).contiguous()
         k = key.transpose(1, 2).contiguous()
