@@ -12,6 +12,7 @@ Checks:
      cos-sim — we use topk=1.0 to isolate quantization error.)
   2. Guard chain: fp32 / seq_len<128 / head_dim=96 / attn_mask each take the SDPA
      path and never call the kernel.
+  3. Cross-attention (N_q != N_k) routes to the SpargeAttn kernel.
 """
 
 import sys
@@ -124,26 +125,52 @@ def main() -> int:
     md = AttentionMetadata(attn_mask=torch.zeros(B, 1, N, N, device=device, dtype=dtype))
     im.forward_cuda(q, k, v, md)
     cases.append(("attn_mask", im._sparge_called))
-    # cross-attention N_q != N_k
-    im = _make_impl()
-    qx, _, _ = _real_structured_qkv(B, N, H, D, device, dtype)
-    _, kx, vx = _real_structured_qkv(B, 512, H, D, device, dtype)
-    im.forward_cuda(qx, kx, vx)
-    cases.append(("cross-attn", im._sparge_called))
-
     for name, called in cases:
         ok = not called
         print(f"[2] guard {name}: kernel called={called}  ({'PASS' if ok else 'FAIL'})")
         if not ok:
             failures.append(f"guard {name} did not fall back to SDPA")
 
-    # --- Sanity: a valid input DOES call the kernel ---
+    # GQA fallback: short sequence forces SDPA fallback, and num_heads != num_kv_heads
+    # must still execute correctly.
+    Hq, Hkv = 16, 2
+    qg, _, _ = _real_structured_qkv(B, 64, Hq, D, device, dtype)
+    _, kg, vg = _real_structured_qkv(B, 64, Hkv, D, device, dtype)
+    im = SpargeAttnImpl(
+        num_heads=Hq, num_kv_heads=Hkv, head_size=D, softmax_scale=sm_scale
+    )
+    out_gqa = im.forward_cuda(qg, kg, vg)
+    ref_gqa = F.scaled_dot_product_attention(
+        qg.transpose(1, 2),
+        kg.transpose(1, 2),
+        vg.transpose(1, 2),
+        scale=sm_scale,
+        is_causal=False,
+        enable_gqa=True,
+    ).transpose(1, 2)
+    cos_gqa = _cos(out_gqa, ref_gqa)
+    ok_gqa = cos_gqa >= 0.9999
+    print(f"[2b] GQA SDPA fallback cos-sim vs SDPA: {cos_gqa:.5f}  ({'PASS' if ok_gqa else 'FAIL'})")
+    if not ok_gqa:
+        failures.append(f"GQA fallback cos-sim {cos_gqa:.5f} < 0.9999")
+
+    # --- Check 3: valid inputs, including cross-attention, call the kernel ---
     im = _make_impl()
     im.forward_cuda(q, k, v)
-    ok_pos = im._sparge_called
-    print(f"[3] valid input calls kernel: {im._sparge_called}  ({'PASS' if ok_pos else 'FAIL'})")
-    if not ok_pos:
+    ok_self = im._sparge_called
+    print(f"[3] self-attn valid input calls kernel: {im._sparge_called}  ({'PASS' if ok_self else 'FAIL'})")
+    if not ok_self:
         failures.append("valid input did not reach the SpargeAttn kernel")
+
+    im = _make_impl()
+    qx, _, _ = _real_structured_qkv(B, N, H, D, device, dtype)
+    _, kx, vx = _real_structured_qkv(B, 512, H, D, device, dtype)
+    im._forward_sparge = lambda *a, **kw: setattr(im, "_sparge_called", True) or a[0]
+    im.forward_cuda(qx, kx, vx)
+    ok_cross = im._sparge_called
+    print(f"[4] cross-attn valid input calls kernel: {im._sparge_called}  ({'PASS' if ok_cross else 'FAIL'})")
+    if not ok_cross:
+        failures.append("cross-attention input did not reach the SpargeAttn kernel")
 
     print()
     if failures:

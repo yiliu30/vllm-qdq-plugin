@@ -4,8 +4,8 @@
 Wraps the prebuilt ``spas_sage_attn`` block-sparse CUDA kernels with:
 - NHD↔HND layout transpose (vllm-omni uses NHD, SpargeAttn uses HND)
 - A guard chain that falls back to torch SDPA whenever SpargeAttn's hard
-  requirements are not met (fp32, cross-attention, seq_len < 128, head_dim
-  not in {64,128}, or an attention mask — which SpargeAttn silently ignores).
+  requirements are not met (fp32, seq_len < 128, head_dim not in {64,128}, or
+  an attention mask — which SpargeAttn silently ignores).
 """
 
 import torch
@@ -17,6 +17,7 @@ from vllm_omni.diffusion.attention.backends.abstract import (
     AttentionImpl,
     AttentionMetadata,
 )
+from vllm_omni.diffusion.attention.backends.sdpa import _maybe_reshape_attn_mask
 
 # Imported lazily (this module is only imported when SpargeAttn is selected), so a
 # missing/unbuilt spas_sage_attn surfaces a clear ImportError only at that point.
@@ -52,6 +53,7 @@ class SpargeAttnImpl(AttentionImpl):
     ) -> None:
         self.causal = causal
         self.softmax_scale = softmax_scale
+        self.requires_gqa = num_heads != num_kv_heads
 
         # Configuration from env vars.
         self._mode = envs.SPARGE_MODE
@@ -89,12 +91,11 @@ class SpargeAttnImpl(AttentionImpl):
         has_mask = attn_metadata is not None and attn_metadata.attn_mask is not None
         if (
             query.dtype == torch.float32
-            or query.shape[1] != key.shape[1]  # cross-attention (N_q != N_k)
             or query.shape[1] < _MIN_SEQ_LEN  # seq_len too short
             or query.shape[-1] not in _SUPPORTED_HEAD_DIMS  # head_dim unsupported
             or has_mask  # SpargeAttn silently ignores masks
         ):
-            return self._forward_sdpa(query, key, value)
+            return self._forward_sdpa(query, key, value, attn_metadata)
         return self._forward_sparge(query, key, value)
 
     def _forward_sdpa(
@@ -102,14 +103,28 @@ class SpargeAttnImpl(AttentionImpl):
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
+        attn_metadata: AttentionMetadata | None = None,
     ) -> torch.Tensor:
         """SDPA fallback when SpargeAttn's constraints are not met."""
+        attention_mask = None
+        if attn_metadata:
+            attention_mask = _maybe_reshape_attn_mask(
+                query, key, attn_metadata.attn_mask, mask_mode="broadcast_k"
+            )
         # Input is NHD [B, N, H, D]; SDPA expects [B, H, N, D].
         q = query.transpose(1, 2)
         k = key.transpose(1, 2)
         v = value.transpose(1, 2)
+        enable_gqa = q.shape[1] != k.shape[1]
         out = F.scaled_dot_product_attention(
-            q, k, v, scale=self.softmax_scale, is_causal=False
+            q,
+            k,
+            v,
+            attn_mask=attention_mask,
+            dropout_p=0.0,
+            scale=self.softmax_scale,
+            is_causal=self.causal,
+            enable_gqa=enable_gqa,
         )
         return out.transpose(1, 2)  # back to NHD
 
@@ -133,6 +148,18 @@ class SpargeAttnImpl(AttentionImpl):
         q = query.transpose(1, 2).contiguous()
         k = key.transpose(1, 2).contiguous()
         v = value.transpose(1, 2).contiguous()
+        if q.shape[1] != k.shape[1]:
+            if q.shape[1] % k.shape[1] != 0:
+                logger.warning_once(
+                    "SpargeAttnImpl: q heads (%d) not divisible by kv heads (%d); "
+                    "falling back to SDPA for this shape",
+                    q.shape[1],
+                    k.shape[1],
+                )
+                return self._forward_sdpa(query, key, value)
+            repeat = q.shape[1] // k.shape[1]
+            k = k.repeat_interleave(repeat, dim=1).contiguous()
+            v = v.repeat_interleave(repeat, dim=1).contiguous()
 
         if self._mode == "cdfthreshd":
             out = spas_sage2_attn_meansim_cuda(
