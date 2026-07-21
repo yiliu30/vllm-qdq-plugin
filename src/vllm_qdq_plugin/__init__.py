@@ -2,7 +2,7 @@
 """vLLM QDQ Plugin — out-of-tree activation quant-dequant simulation.
 
 Registered as a vllm.general_plugins entry point. Activated by VLLM_QDQ=1.
-Also provides sage3 Triton attention backend for vllm-omni (VLLM_SAGE3_TRITON=1).
+Also provides out-of-tree diffusion attention backends for vllm-omni.
 """
 
 from vllm.logger import init_logger
@@ -107,6 +107,48 @@ def register_omni_sparge_attn():
         )
 
 
+def register_omni_sla_attn():
+    import importlib.util
+    import sys
+
+    if importlib.util.find_spec("SageSLA") is None and envs.SLA_REPO:
+        sys.path.insert(0, envs.SLA_REPO)
+        logger.warning(
+            "vllm-qdq-plugin: added SLA_REPO to sys.path (%s)",
+            envs.SLA_REPO,
+        )
+    if importlib.util.find_spec("spas_sage_attn") is None and envs.SPARGE_ATTN_REPO:
+        sys.path.insert(0, envs.SPARGE_ATTN_REPO)
+        logger.warning(
+            "vllm-qdq-plugin: added SPARGE_ATTN_REPO to sys.path (%s)",
+            envs.SPARGE_ATTN_REPO,
+        )
+
+    try:
+        from vllm_omni.diffusion.attention.backends.registry import (
+            DiffusionAttentionBackendEnum,
+            register_diffusion_backend,
+        )
+
+        register_diffusion_backend(
+            DiffusionAttentionBackendEnum.SAGE_ATTN,
+            "vllm_qdq_plugin.sla_attn.backend.SLABackend",
+        )
+        from .sla_attn import fp32_patch
+
+        fp32_patch.install()
+        logger.warning(
+            "vllm-qdq-plugin: registered SLA backend as SAGE_ATTN "
+            "(VLLM_SLA_ATTN=1)"
+        )
+    except ImportError as e:
+        logger.warning(
+            "vllm-qdq-plugin: cannot register SLA backend — "
+            "vllm_omni not available (%s)",
+            e,
+        )
+
+
 def _maybe_install_route(route_file: str):
     """Install per-(layer, step) attention routing if a route file is set.
 
@@ -134,16 +176,22 @@ def register_omni():
     Conditionally overrides SAGE_ATTN backend with sage3 Triton implementation.
     When VLLM_SAGE3_TRITON=0 (default), does nothing — original in-tree backend used.
     """
-    # sage3 and SpargeAttn both override the SAGE_ATTN slot, so they are mutually
-    # exclusive. If both are requested, SpargeAttn wins deterministically.
+    # These backends all override the SAGE_ATTN slot, so only one may be active.
     sage3_requested = envs.VLLM_SAGE3_TRITON or envs.VLLM_SAGE3_CUTE
-    if envs.VLLM_SPARGE_ATTN and sage3_requested:
-        logger.warning(
-            "vllm-qdq-plugin: both VLLM_SPARGE_ATTN and a sage3 flag are set; "
-            "they share the SAGE_ATTN backend slot. Using SpargeAttn."
+    overrides_requested = sum(
+        bool(flag)
+        for flag in (envs.VLLM_SLA_ATTN, envs.VLLM_SPARGE_ATTN, sage3_requested)
+    )
+    if overrides_requested > 1:
+        raise RuntimeError(
+            "vllm-qdq-plugin: VLLM_SLA_ATTN, VLLM_SPARGE_ATTN, and "
+            "VLLM_SAGE3_{TRITON,CUTE} are mutually exclusive"
         )
 
-    if envs.VLLM_SPARGE_ATTN:
+    if envs.VLLM_SLA_ATTN:
+        register_omni_sla_attn()
+        logger.warning_once("vllm-qdq-plugin: registered SLA backend for vllm-omni")
+    elif envs.VLLM_SPARGE_ATTN:
         register_omni_sparge_attn()
         logger.warning_once(
             "vllm-qdq-plugin: registered SpargeAttn backend for vllm-omni"
@@ -161,5 +209,7 @@ def register_omni():
         )
     else:
         logger.warning_once(
-            "vllm-qdq-plugin: no sage3 backend registered for vllm-omni — set VLLM_SAGE3_TRITON=1 or VLLM_SAGE3_CUTE=1 to enable"
+            "vllm-qdq-plugin: no custom attention backend registered for "
+            "vllm-omni — set VLLM_SLA_ATTN=1, VLLM_SPARGE_ATTN=1, "
+            "VLLM_SAGE3_TRITON=1, or VLLM_SAGE3_CUTE=1 to enable"
         )
