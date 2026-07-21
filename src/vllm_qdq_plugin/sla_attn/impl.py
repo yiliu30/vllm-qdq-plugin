@@ -23,6 +23,7 @@ logger = init_logger(__name__)
 
 _MIN_SEQ_LEN = 128
 _SUPPORTED_HEAD_DIMS = (64, 128)
+_COMPARE_SDPA_CALLS = 0
 
 
 def _debug_enabled() -> bool:
@@ -51,6 +52,7 @@ class SLAImpl(AttentionImpl):
     ) -> None:
         self.causal = causal
         self.softmax_scale = softmax_scale
+        self._prefix = prefix
         self._topk = float(envs.SLA_TOPK)
         self._feature_map = envs.SLA_FEATURE_MAP
         if backend_kwargs:
@@ -97,12 +99,21 @@ class SLAImpl(AttentionImpl):
                 tuple(query.shape),
             )
             return self._forward_sdpa(query, key, value, attn_metadata)
-        return self._forward_sla(
+        out = self._forward_sla(
             query,
             key,
             value,
             protect_prefix_tokens=protect_prefix_tokens,
         )
+        self._maybe_compare_with_sdpa(
+            out,
+            query,
+            key,
+            value,
+            attn_metadata,
+            protect_prefix_tokens,
+        )
+        return out
 
     def _fallback_reason(
         self,
@@ -202,6 +213,51 @@ class SLAImpl(AttentionImpl):
                 protect_prefix_tokens=protect_prefix_tokens,
             )
         return out.transpose(1, 2).contiguous()
+
+    def _maybe_compare_with_sdpa(
+        self,
+        sla_out: torch.Tensor,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attn_metadata: AttentionMetadata | None,
+        protect_prefix_tokens: int,
+    ) -> None:
+        if not envs.SLA_COMPARE_SDPA:
+            return
+
+        global _COMPARE_SDPA_CALLS
+        max_calls = int(envs.SLA_COMPARE_MAX_CALLS or "0")
+        if max_calls > 0 and _COMPARE_SDPA_CALLS >= max_calls:
+            return
+        _COMPARE_SDPA_CALLS += 1
+
+        sdpa_out = self._forward_sdpa(query, key, value, attn_metadata)
+        sla_flat = sla_out.reshape(-1).float()
+        sdpa_flat = sdpa_out.reshape(-1).float()
+        cosine = float(F.cosine_similarity(sla_flat, sdpa_flat, dim=0).item())
+        diff = (sla_out.float() - sdpa_out.float()).abs()
+        mean_abs = float(diff.mean().item())
+        max_abs = float(diff.max().item())
+
+        blk_k = 128 if self._get_cuda_arch(query.device.index) == "sm90" else 64
+        kv_blocks = math.ceil(key.shape[1] / blk_k)
+        requested_blocks = min(kv_blocks, int(self._topk * kv_blocks))
+        logger.warning(
+            "SLAImpl compare[%d]: prefix=%s topk=%.4f kv_blocks=%d requested_blocks=%d protect_prefix_tokens=%d "
+            "q=%s k=%s cosine=%.8f mean_abs=%.8e max_abs=%.8e",
+            _COMPARE_SDPA_CALLS,
+            self._prefix or "<none>",
+            self._topk,
+            kv_blocks,
+            requested_blocks,
+            protect_prefix_tokens,
+            tuple(query.shape),
+            tuple(key.shape),
+            cosine,
+            mean_abs,
+            max_abs,
+        )
 
     @staticmethod
     def _get_protect_prefix_tokens(attn_metadata: AttentionMetadata | None) -> int:

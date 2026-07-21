@@ -104,6 +104,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
         choices=["elu", "relu", "softmax"],
         case_sensitive=False,
     ),
+    # When truthy, compute an SDPA reference inside SLA forwards and log
+    # similarity metrics for a limited number of calls.
+    "SLA_COMPARE_SDPA": lambda: _env_flag("SLA_COMPARE_SDPA"),
+    "SLA_COMPARE_MAX_CALLS": lambda: os.getenv("SLA_COMPARE_MAX_CALLS", "0"),
     # SpargeAttn block-sparse attention backend (mutually exclusive with sage3).
     "VLLM_SPARGE_ATTN": lambda: _env_flag("VLLM_SPARGE_ATTN"),
     # Path to the SpargeAttn repo; injected on sys.path at registration when the
