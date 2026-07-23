@@ -22,3 +22,7 @@ class EnvTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "Invalid value 'bad_mode'"):
                 _ = envs.VLLM_MARLIN_MOE_QDQ_MODE
+
+    def test_svg2_repo_defaults_to_node_checkout(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(envs.SVG2_REPO, "/home/yiliu7/sparse-videogen-uv")
