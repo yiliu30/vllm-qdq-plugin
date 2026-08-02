@@ -12,6 +12,56 @@ from . import envs
 logger = init_logger(__name__)
 
 
+def _install_svg2_flashinfer_buffer_shim() -> None:
+    try:
+        import torch
+        import flashinfer.sparse
+    except Exception:
+        return
+
+    cls = flashinfer.sparse.VariableBlockSparseAttentionWrapper
+    if getattr(cls, "__vllm_qdq_svg2_buffer_shim__", False):
+        return
+
+    orig_init = cls.__init__
+    orig_reset = cls.reset_workspace_buffer
+
+    def _ensure_buffers(self) -> None:
+        if not hasattr(self, "_vector_sparse_indices_buffer"):
+            self._vector_sparse_indices_buffer = torch.empty(
+                (128 * 1024 * 1024,), dtype=torch.int32, device=self.device
+            )
+        if not hasattr(self, "_vector_sparse_indptr_buffer"):
+            self._vector_sparse_indptr_buffer = torch.empty(
+                (32768,), dtype=torch.int32, device=self.device
+            )
+
+    def patched_init(self, float_workspace_buffer, backend="auto"):
+        orig_init(self, float_workspace_buffer, backend=backend)
+        _ensure_buffers(self)
+
+    def patched_reset(
+        self,
+        float_workspace_buffer,
+        int_workspace_buffer,
+        vector_sparse_indices_buffer=None,
+        vector_sparse_indptr_buffer=None,
+    ):
+        orig_reset(self, float_workspace_buffer, int_workspace_buffer)
+        _ensure_buffers(self)
+        if vector_sparse_indices_buffer is not None:
+            self._vector_sparse_indices_buffer = vector_sparse_indices_buffer
+        if vector_sparse_indptr_buffer is not None:
+            self._vector_sparse_indptr_buffer = vector_sparse_indptr_buffer
+
+    cls.__init__ = patched_init
+    cls.reset_workspace_buffer = patched_reset
+    cls.__vllm_qdq_svg2_buffer_shim__ = True
+    logger.warning_once(
+        "vllm-qdq-plugin: installed SVG2 FlashInfer buffer shim for VariableBlockSparseAttentionWrapper"
+    )
+
+
 def register():
     """Called by vLLM plugin loader in every process (main + workers)."""
 
@@ -149,6 +199,42 @@ def register_omni_sla_attn():
         )
 
 
+def register_omni_svg2_attn():
+    import importlib.util
+    import os
+    import sys
+
+    svg2_repo = envs.SVG2_REPO
+    if importlib.util.find_spec("svg") is None and svg2_repo and os.path.isdir(svg2_repo):
+        sys.path.insert(0, svg2_repo)
+        logger.warning(
+            "vllm-qdq-plugin: added SVG2_REPO to sys.path (%s)",
+            svg2_repo,
+        )
+
+    _install_svg2_flashinfer_buffer_shim()
+
+    try:
+        from vllm_omni.diffusion.attention.backends.registry import (
+            DiffusionAttentionBackendEnum,
+            register_diffusion_backend,
+        )
+
+        register_diffusion_backend(
+            DiffusionAttentionBackendEnum.SVG2_ATTN,
+            "vllm_qdq_plugin.svg2_attn.backend.SVG2AttentionBackend",
+        )
+        logger.warning_once(
+            "vllm-qdq-plugin: registered SVG2 backend as SVG2_ATTN"
+        )
+    except (ImportError, AttributeError) as e:
+        logger.warning(
+            "vllm-qdq-plugin: cannot register SVG2 backend — "
+            "vllm_omni SVG2 slot unavailable (%s)",
+            e,
+        )
+
+
 def _maybe_install_route(route_file: str):
     """Install per-(layer, step) attention routing if a route file is set.
 
@@ -176,6 +262,8 @@ def register_omni():
     Conditionally overrides SAGE_ATTN backend with sage3 Triton implementation.
     When VLLM_SAGE3_TRITON=0 (default), does nothing — original in-tree backend used.
     """
+    register_omni_svg2_attn()
+
     # These backends all override the SAGE_ATTN slot, so only one may be active.
     sage3_requested = envs.VLLM_SAGE3_TRITON or envs.VLLM_SAGE3_CUTE
     overrides_requested = sum(
@@ -210,6 +298,7 @@ def register_omni():
     else:
         logger.warning_once(
             "vllm-qdq-plugin: no custom attention backend registered for "
-            "vllm-omni — set VLLM_SLA_ATTN=1, VLLM_SPARGE_ATTN=1, "
-            "VLLM_SAGE3_TRITON=1, or VLLM_SAGE3_CUTE=1 to enable"
+            "vllm-omni SAGE_ATTN overrides — set VLLM_SLA_ATTN=1, "
+            "VLLM_SPARGE_ATTN=1, VLLM_SAGE3_TRITON=1, or "
+            "VLLM_SAGE3_CUTE=1 to enable"
         )
