@@ -110,6 +110,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "SLA_COMPARE_MAX_CALLS": lambda: os.getenv("SLA_COMPARE_MAX_CALLS", "0"),
     # SpargeAttn block-sparse attention backend (mutually exclusive with sage3).
     "VLLM_SPARGE_ATTN": lambda: _env_flag("VLLM_SPARGE_ATTN"),
+    # MXAttention UOS/PNQ backend (overrides the SAGE_ATTN slot).
+    "VLLM_MXATTENTION": lambda: _env_flag("VLLM_MXATTENTION"),
+    "MXATTENTION_MODE": lambda: os.getenv("MXATTENTION_MODE", "mxattention_full").lower(),
+    "MXATTENTION_QMAX": lambda: os.getenv("MXATTENTION_QMAX", "7.25"),
+    "MXATTENTION_USE_HADAMARD": lambda: _env_flag("MXATTENTION_USE_HADAMARD", "1"),
     # Path to the SpargeAttn repo; injected on sys.path at registration when the
     # spas_sage_attn package is not already importable. Empty string = rely on the
     # package already being installed/importable.

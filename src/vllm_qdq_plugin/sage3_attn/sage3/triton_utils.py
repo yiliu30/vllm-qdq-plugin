@@ -46,3 +46,24 @@ def compute_p_scale_inv(
     )
 
     return p_e8m0, inv_scale_expanded
+
+
+@triton.jit
+def compute_uos_p_scale_inv(
+    p_amax,
+    FORMAT_MAX: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    """UOS P scales with canonical unit scale for all-zero groups."""
+    is_zero = p_amax == 0.0
+    normalized = tl.maximum(p_amax / FORMAT_MAX, 1.17549435e-38)
+    exponent = tl.math.ceil(tl.math.log2(normalized))
+    exponent = tl.minimum(tl.maximum(exponent, -127.0), 127.0)
+    code = tl.where(is_zero, 127.0, exponent + 127.0).to(tl.uint8)
+    inv_scale = tl.where(is_zero, 1.0, tl.math.exp2(-exponent))
+    expanded = tl.reshape(
+        tl.broadcast_to(inv_scale[:, :, None], [BLOCK_M, BLOCK_N // 32, 32]),
+        [BLOCK_M, BLOCK_N],
+    )
+    return code, expanded
