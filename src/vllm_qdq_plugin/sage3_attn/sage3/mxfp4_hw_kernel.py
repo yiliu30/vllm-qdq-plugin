@@ -258,7 +258,7 @@ def _decode_mxfp4_registers(packed, scale, BLOCK_M: tl.constexpr, BLOCK_N: tl.co
 
 @triton.jit
 def _mxfp4_attn_fwd_inner_scaled(
-    acc0, acc1, acc2, acc3, l_i, m_i, q, q_scale,  #
+    acc, l_i, m_i, q, q_scale,  #
     K_ptr, K_scale_ptr, V_ptr, V_scale_ptr,  #
     Delta_s_ptr,  #
     stride_kn, stride_kk,  #
@@ -276,12 +276,7 @@ def _mxfp4_attn_fwd_inner_scaled(
     HAS_DELTA_S: tl.constexpr,  #
     UOS_QMAX: tl.constexpr,  #
 ):
-    """MXAttention inner loop using native MXFP4 scaled MMA.
-
-    The PV result is split into four 32-column accumulators.  A single
-    [128, 128] scaled MMA is rejected by the Blackwell layout legalization;
-    four [128, 32] MMAs map to the supported TMEM accumulator layout.
-    """
+    """MXAttention inner loop using native MXFP4 scaled MMA with UOS/PNQ."""
     if STAGE == 1:
         lo, hi = 0, tl.minimum(start_m * BLOCK_M, N_CTX)
     elif STAGE == 2:
@@ -299,7 +294,7 @@ def _mxfp4_attn_fwd_inner_scaled(
     offs_k_scale = tl.arange(0, HEAD_DIM_SCALES)
     offs_n_packed = tl.arange(0, BLOCK_N_PACKED)
     offs_n_scale = tl.arange(0, BLOCK_N_SCALES)
-    offs_d = tl.arange(0, 32)
+    offs_d = tl.arange(0, HEAD_DIM)
 
     for start_n in tl.range(lo, hi, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
@@ -376,69 +371,27 @@ def _mxfp4_attn_fwd_inner_scaled(
         )
         l_i = l_i * alpha + l_ij
 
-        # Four native scaled MMAs for P @ V.  Each V tile has logical shape
-        # [32, 64] and is split across the 128-dimensional head.
-        acc0 = acc0 * alpha[:, None]
-        acc1 = acc1 * alpha[:, None]
-        acc2 = acc2 * alpha[:, None]
-        acc3 = acc3 * alpha[:, None]
+        # One native scaled MMA for P @ V over the full head dimension.  PNQ is
+        # still preserved through p_packed/p_e8m0 and represented-probability l_i.
+        acc = acc * alpha[:, None]
 
-        v0 = tl.load(
+        v = tl.load(
             V_ptr
             + offs_d[:, None] * stride_vd
             + (start_n // 2 + offs_n_packed)[None, :] * stride_vn
         )
-        v1 = tl.load(
-            V_ptr
-            + (offs_d + 32)[:, None] * stride_vd
-            + (start_n // 2 + offs_n_packed)[None, :] * stride_vn
-        )
-        v2 = tl.load(
-            V_ptr
-            + (offs_d + 64)[:, None] * stride_vd
-            + (start_n // 2 + offs_n_packed)[None, :] * stride_vn
-        )
-        v3 = tl.load(
-            V_ptr
-            + (offs_d + 96)[:, None] * stride_vd
-            + (start_n // 2 + offs_n_packed)[None, :] * stride_vn
-        )
-        vs0 = tl.load(
+        v_scale = tl.load(
             V_scale_ptr
             + offs_d[:, None] * stride_vs_d
             + (start_n // 32 + offs_n_scale)[None, :] * stride_vs_n
         )
-        vs1 = tl.load(
-            V_scale_ptr
-            + (offs_d + 32)[:, None] * stride_vs_d
-            + (start_n // 32 + offs_n_scale)[None, :] * stride_vs_n
-        )
-        vs2 = tl.load(
-            V_scale_ptr
-            + (offs_d + 64)[:, None] * stride_vs_d
-            + (start_n // 32 + offs_n_scale)[None, :] * stride_vs_n
-        )
-        vs3 = tl.load(
-            V_scale_ptr
-            + (offs_d + 96)[:, None] * stride_vs_d
-            + (start_n // 32 + offs_n_scale)[None, :] * stride_vs_n
-        )
 
-        acc0 = tl.dot_scaled(
-            p_packed, p_e8m0, "e2m1", tl.trans(v0), vs0, "e2m1", acc0
-        )
-        acc1 = tl.dot_scaled(
-            p_packed, p_e8m0, "e2m1", tl.trans(v1), vs1, "e2m1", acc1
-        )
-        acc2 = tl.dot_scaled(
-            p_packed, p_e8m0, "e2m1", tl.trans(v2), vs2, "e2m1", acc2
-        )
-        acc3 = tl.dot_scaled(
-            p_packed, p_e8m0, "e2m1", tl.trans(v3), vs3, "e2m1", acc3
+        acc = tl.dot_scaled(
+            p_packed, p_e8m0, "e2m1", tl.trans(v), v_scale, "e2m1", acc
         )
         m_i = m_ij
 
-    return acc0, acc1, acc2, acc3, l_i, m_i
+    return acc, l_i, m_i
 
 
 @triton.jit
@@ -609,8 +562,6 @@ def _mxfp4_attn_fwd(
     offs_n = tl.arange(0, BLOCK_N)
 
     # MXAttention's UOS/PNQ path uses native MXFP4 scaled MMA throughout.
-    # The four PV accumulators are required because Blackwell rejects a
-    # single [128, 128] scaled-MMA accumulator layout.
     if PNQ:
         offs_head_packed = tl.arange(0, HEAD_DIM // 2)
         offs_head_scale = tl.arange(0, HEAD_DIM // 32)
@@ -627,15 +578,12 @@ def _mxfp4_attn_fwd(
 
         m_i = tl.zeros([BLOCK_M], dtype=tl.float32) - float("inf")
         l_i = tl.zeros([BLOCK_M], dtype=tl.float32) + 1.0
-        acc0 = tl.zeros([BLOCK_M, 32], dtype=tl.float32)
-        acc1 = tl.zeros([BLOCK_M, 32], dtype=tl.float32)
-        acc2 = tl.zeros([BLOCK_M, 32], dtype=tl.float32)
-        acc3 = tl.zeros([BLOCK_M, 32], dtype=tl.float32)
+        acc = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
         qk_scale = sm_scale * 1.44269504
 
         if STAGE & 1:
-            acc0, acc1, acc2, acc3, l_i, m_i = _mxfp4_attn_fwd_inner_scaled(
-                acc0, acc1, acc2, acc3, l_i, m_i, q, q_scale,
+            acc, l_i, m_i = _mxfp4_attn_fwd_inner_scaled(
+                acc, l_i, m_i, q, q_scale,
                 K_ptr, K_scale_ptr, V_ptr, V_scale_ptr,
                 Delta_s_ptr,
                 stride_kn, stride_kk,
@@ -651,8 +599,8 @@ def _mxfp4_attn_fwd(
                 UOS_QMAX,
             )
         if STAGE & 2:
-            acc0, acc1, acc2, acc3, l_i, m_i = _mxfp4_attn_fwd_inner_scaled(
-                acc0, acc1, acc2, acc3, l_i, m_i, q, q_scale,
+            acc, l_i, m_i = _mxfp4_attn_fwd_inner_scaled(
+                acc, l_i, m_i, q, q_scale,
                 K_ptr, K_scale_ptr, V_ptr, V_scale_ptr,
                 Delta_s_ptr,
                 stride_kn, stride_kk,
@@ -668,12 +616,9 @@ def _mxfp4_attn_fwd(
                 UOS_QMAX,
             )
 
-        d = tl.arange(0, 32)
-        o_base = Out + o_offset + offs_m[:, None] * stride_om
-        tl.store(o_base + d[None, :] * stride_ok, (acc0 / l_i[:, None]).to(Out.dtype.element_ty))
-        tl.store(o_base + (d + 32)[None, :] * stride_ok, (acc1 / l_i[:, None]).to(Out.dtype.element_ty))
-        tl.store(o_base + (d + 64)[None, :] * stride_ok, (acc2 / l_i[:, None]).to(Out.dtype.element_ty))
-        tl.store(o_base + (d + 96)[None, :] * stride_ok, (acc3 / l_i[:, None]).to(Out.dtype.element_ty))
+        acc = acc / l_i[:, None]
+        o_ptrs = Out + o_offset + offs_m[:, None] * stride_om + tl.arange(0, HEAD_DIM)[None, :] * stride_ok
+        tl.store(o_ptrs, acc.to(Out.dtype.element_ty))
     else:
         HEAD_DIM_PACKED: tl.constexpr = HEAD_DIM // 2
         q = tl.load(
