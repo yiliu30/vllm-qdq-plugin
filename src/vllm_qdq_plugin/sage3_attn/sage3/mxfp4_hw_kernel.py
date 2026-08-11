@@ -146,6 +146,25 @@ def dequantize_mxfp4(x_packed: torch.Tensor, scales: torch.Tensor, group_size: i
 
 
 @triton.jit
+def _fp32x2_to_fp4x2(x_lo, x_hi):
+    """Convert two f32 values to packed E2M1x2 using Blackwell PTX."""
+    return tl.inline_asm_elementwise(
+        """
+        {
+            .reg .b8 tmp;
+            cvt.rn.satfinite.e2m1x2.f32 tmp, $1, $2;
+            cvt.u32.u8 $0, tmp;
+        }
+        """,
+        constraints="=r,f,f",
+        args=[x_hi, x_lo],
+        dtype=tl.uint32,
+        is_pure=True,
+        pack=1,
+    ).to(tl.uint8)
+
+
+@triton.jit
 def _decode_positive_e2m1(code):
     """Decode a positive E2M1 code in Triton."""
     return tl.where(
@@ -424,7 +443,7 @@ def _mxfp4_attn_fwd_inner_scaled(
 
 @triton.jit
 def _mxfp4_attn_fwd_inner(
-    acc, l_i, m_i, q,  #
+    acc, l_i, m_i, q, q_scale,  #
     K_ptr, K_scale_ptr, V_ptr, V_scale_ptr,  #
     Delta_s_ptr,  #
     stride_kn, stride_kk,  #
@@ -440,8 +459,6 @@ def _mxfp4_attn_fwd_inner(
     BLOCK_N: tl.constexpr,  #
     STAGE: tl.constexpr,  #
     HAS_DELTA_S: tl.constexpr,  #
-    PNQ: tl.constexpr,  #
-    UOS_QMAX: tl.constexpr,  #
 ):
     # Determine loop bounds based on causal stage
     if STAGE == 1:
@@ -454,27 +471,29 @@ def _mxfp4_attn_fwd_inner(
 
     BLOCK_N_PACKED: tl.constexpr = BLOCK_N // 2
 
+    HEAD_DIM_PACKED: tl.constexpr = HEAD_DIM // 2
     offs_k_n = tl.arange(0, BLOCK_N)
+    offs_head_packed = tl.arange(0, HEAD_DIM_PACKED)
+    offs_scale_k = tl.arange(0, HEAD_DIM // 32)
+    offs_scale_n = tl.arange(0, BLOCK_N // 32)
+    offs_n_packed = tl.arange(0, BLOCK_N_PACKED)
     offs_head_full = tl.arange(0, HEAD_DIM)
 
     for start_n in tl.range(lo, hi, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
 
-        # Decode K to FP32 before the regular dot.  Triton 3.6/3.7 currently
-        # cannot lower dot_scaled when it is inside this online-softmax loop.
-        k = _decode_mxfp4_matrix(
-            K_ptr,
-            K_scale_ptr,
-            start_n + offs_k_n,
-            offs_head_full,
-            stride_kn,
-            stride_kk,
-            stride_ks_n,
-            stride_ks_k,
+        # Load packed MXFP4 K and its E8M0 scales.
+        k_ptrs = K_ptr + (start_n + offs_k_n[:, None]) * stride_kn + offs_head_packed[None, :] * stride_kk
+        k = tl.load(k_ptrs)
+        ks_ptrs = (
+            K_scale_ptr
+            + (start_n + offs_k_n[:, None]) * stride_ks_n
+            + offs_scale_k[None, :] * stride_ks_k
         )
+        k_scale = tl.load(ks_ptrs)
 
-        # -- Q @ K^T via regular FP32 dot on decoded MXFP4 --
-        qk = tl.dot(q, tl.trans(k), out_dtype=tl.float32)
+        # Q @ K^T through native Blackwell MXFP4 scaled MMA.
+        qk = tl.dot_scaled(q, q_scale, "e2m1", tl.trans(k), k_scale, "e2m1")
 
         # -- Add delta_s correction (before scaling) --
         if HAS_DELTA_S:
@@ -484,30 +503,16 @@ def _mxfp4_attn_fwd_inner(
             qk = qk + ds_tile[None, :]
 
         # -- Online softmax --
-        if PNQ:
-            valid_n = (start_n + offs_n[None, :]) < N_CTX
-            if STAGE == 2:
-                mask = (offs_m[:, None] >= (start_n + offs_n[None, :])) & valid_n
-                qk = qk * qk_scale + tl.where(mask, 0, -1.0e6)
-                m_ij = tl.maximum(m_i, tl.max(qk, 1))
-                qk -= m_ij[:, None]
-            else:
-                qk = qk * qk_scale
-                qk = tl.where(valid_n, qk, -1.0e6)
-                m_ij = tl.maximum(m_i, tl.max(qk, 1))
-                qk = qk - m_ij[:, None]
-            p = tl.math.exp2(qk)
-            p = tl.where(valid_n, p, 0.0)
+        if STAGE == 2:
+            mask = offs_m[:, None] >= (start_n + offs_n[None, :])
+            qk = qk * qk_scale + tl.where(mask, 0, -1.0e6)
+            m_ij = tl.maximum(m_i, tl.max(qk, 1))
+            qk -= m_ij[:, None]
         else:
-            if STAGE == 2:
-                mask = offs_m[:, None] >= (start_n + offs_n[None, :])
-                qk = qk * qk_scale + tl.where(mask, 0, -1.0e6)
-                m_ij = tl.maximum(m_i, tl.max(qk, 1))
-                qk -= m_ij[:, None]
-            else:
-                m_ij = tl.maximum(m_i, tl.max(qk, 1) * qk_scale)
-                qk = qk * qk_scale - m_ij[:, None]
-            p = tl.math.exp2(qk)
+            m_ij = tl.maximum(m_i, tl.max(qk, 1) * qk_scale)
+            qk = qk * qk_scale - m_ij[:, None]
+
+        p = tl.math.exp2(qk)
         alpha = tl.math.exp2(m_i - m_ij)
 
         acc = acc * alpha[:, None]
@@ -517,69 +522,36 @@ def _mxfp4_attn_fwd_inner(
         p_reshaped = tl.reshape(p, [BLOCK_M, BLOCK_N // 32, 32])
         p_amax = tl.max(p_reshaped, 2)  # [BLOCK_M, BLOCK_N // 32]
 
-        FP4_E2M1_MAX: tl.constexpr = UOS_QMAX
-        if PNQ:
-            p_e8m0, inv_scale_expanded = compute_uos_p_scale_inv(
-                p_amax, FP4_E2M1_MAX, BLOCK_M, BLOCK_N
-            )
-        else:
-            p_e8m0, inv_scale_expanded = compute_p_scale_inv(
-                p_amax, FP4_E2M1_MAX, BLOCK_M, BLOCK_N
-            )
+        FP4_E2M1_MAX: tl.constexpr = 6.0
+        p_e8m0, inv_scale_expanded = compute_p_scale_inv(
+            p_amax, FP4_E2M1_MAX, BLOCK_M, BLOCK_N,
+        )
 
         # Scale P values
         p_scaled = p * inv_scale_expanded
 
-        # Pack to FP4: split consecutive pairs and encode E2M1 nibbles
+        # Pack to FP4 with the native Blackwell conversion instruction.
         # Reshape [BLOCK_M, BLOCK_N] → [BLOCK_M, BLOCK_N//2, 2], then split
         p_pairs = tl.reshape(p_scaled, [BLOCK_M, BLOCK_N_PACKED, 2])
         p_even, p_odd = tl.split(p_pairs)  # each [BLOCK_M, BLOCK_N//2]
 
-        # Triton 3.6/3.7 can miscompile inline E2M1 conversion when its
-        # operands came through tl.reshape/tl.split.  Integer encoding keeps
-        # the exact E2M1 thresholds and avoids that codegen path.
-        p_packed = (_encode_e2m1(p_even) | (_encode_e2m1(p_odd) << 4)).to(tl.uint8)
+        p_packed = _fp32x2_to_fp4x2(p_even, p_odd)
 
-        if PNQ:
-            # PNQ uses the represented quantized probability for both the
-            # normalization state and the PV update.  Decode only the paired
-            # E2M1 values needed for the row reduction; never materialize P.
-            packed_u32 = p_packed.to(tl.uint32)
-            p_code_even = packed_u32 & 0x7
-            p_code_odd = (packed_u32 >> 4) & 0x7
-            p_scale = tl.math.exp2(p_e8m0.to(tl.float32) - 127.0)
-            p_scale_full = tl.reshape(
-                tl.broadcast_to(p_scale[:, :, None], [BLOCK_M, BLOCK_N // 32, 32]),
-                [BLOCK_M, BLOCK_N],
-            )
-            p_scale_pairs = tl.reshape(p_scale_full, [BLOCK_M, BLOCK_N_PACKED, 2])
-            p_scale_even, p_scale_odd = tl.split(p_scale_pairs)
-            l_ij = tl.sum(
-                _decode_positive_e2m1(p_code_even) * p_scale_even
-                + _decode_positive_e2m1(p_code_odd) * p_scale_odd,
-                1,
-            )
-        else:
-            l_ij = tl.sum(p, 1)
+        l_ij = tl.sum(p, 1)
         l_i = l_i * alpha + l_ij
 
-        # Decode P and V before the regular PV dot for the same compiler
-        # workaround as QK.  P remains register-resident; no HBM P tile is
-        # created.
-        p_decoded = _decode_mxfp4_registers(
-            p_packed, p_e8m0, BLOCK_M, BLOCK_N
+        # Load packed MXFP4 V and its E8M0 scales.
+        v_ptrs = V_ptr + offs_head_full[:, None] * stride_vd + (start_n // 2 + offs_n_packed[None, :]) * stride_vn
+        v = tl.load(v_ptrs)
+        vs_ptrs = (
+            V_scale_ptr
+            + offs_head_full[:, None] * stride_vs_d
+            + (start_n // 32 + offs_scale_n[None, :]) * stride_vs_n
         )
-        v = _decode_mxfp4_matrix(
-            V_ptr,
-            V_scale_ptr,
-            offs_head_full,
-            start_n + offs_n,
-            stride_vd,
-            stride_vn,
-            stride_vs_d,
-            stride_vs_n,
-        )
-        acc = tl.dot(p_decoded, tl.trans(v), out_dtype=tl.float32) + acc
+        v_scale = tl.load(vs_ptrs)
+
+        # P @ V through native Blackwell MXFP4 scaled MMA.
+        acc = tl.dot_scaled(p_packed, p_e8m0, "e2m1", tl.trans(v), v_scale, "e2m1", acc)
 
         m_i = m_ij
 
@@ -703,15 +675,14 @@ def _mxfp4_attn_fwd(
         tl.store(o_base + (d + 64)[None, :] * stride_ok, (acc2 / l_i[:, None]).to(Out.dtype.element_ty))
         tl.store(o_base + (d + 96)[None, :] * stride_ok, (acc3 / l_i[:, None]).to(Out.dtype.element_ty))
     else:
-        q = _decode_mxfp4_matrix(
-            Q_ptr,
-            Q_scale_ptr,
-            offs_m,
-            tl.arange(0, HEAD_DIM),
-            stride_qm,
-            stride_qk,
-            stride_qsm,
-            stride_qsk,
+        HEAD_DIM_PACKED: tl.constexpr = HEAD_DIM // 2
+        q = tl.load(
+            Q_ptr + offs_m[:, None] * stride_qm + tl.arange(0, HEAD_DIM_PACKED)[None, :] * stride_qk
+        )
+        q_scale = tl.load(
+            Q_scale_ptr
+            + offs_m[:, None] * stride_qsm
+            + tl.arange(0, HEAD_DIM // 32)[None, :] * stride_qsk
         )
         m_i = tl.zeros([BLOCK_M], dtype=tl.float32) - float("inf")
         l_i = tl.zeros([BLOCK_M], dtype=tl.float32) + 1.0
@@ -720,7 +691,7 @@ def _mxfp4_attn_fwd(
 
         if STAGE & 1:
             acc, l_i, m_i = _mxfp4_attn_fwd_inner(
-                acc, l_i, m_i, q,
+                acc, l_i, m_i, q, q_scale,
                 K_ptr, K_scale_ptr, V_ptr, V_scale_ptr,
                 Delta_s_ptr,
                 stride_kn, stride_kk,
@@ -733,12 +704,10 @@ def _mxfp4_attn_fwd(
                 N_CTX, BLOCK_M, HEAD_DIM, BLOCK_N,
                 4 - STAGE,
                 HAS_DELTA_S,
-                PNQ,
-                UOS_QMAX,
             )
         if STAGE & 2:
             acc, l_i, m_i = _mxfp4_attn_fwd_inner(
-                acc, l_i, m_i, q,
+                acc, l_i, m_i, q, q_scale,
                 K_ptr, K_scale_ptr, V_ptr, V_scale_ptr,
                 Delta_s_ptr,
                 stride_kn, stride_kk,
@@ -751,8 +720,6 @@ def _mxfp4_attn_fwd(
                 N_CTX, BLOCK_M, HEAD_DIM, BLOCK_N,
                 2,
                 HAS_DELTA_S,
-                PNQ,
-                UOS_QMAX,
             )
 
         acc = acc / l_i[:, None]
