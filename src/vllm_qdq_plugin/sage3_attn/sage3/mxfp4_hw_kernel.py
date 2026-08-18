@@ -198,13 +198,13 @@ def _decode_e2m1(code):
 def _encode_e2m1(x):
     """Encode FP32 values to signed E2M1 nibbles without inline PTX."""
     ax = tl.abs(x)
-    code = tl.where(ax < 0.25, 0, 1)
+    code = tl.where(ax > 0.25, 1, 0)
     code = tl.where(ax >= 0.75, 2, code)
-    code = tl.where(ax >= 1.25, 3, code)
+    code = tl.where(ax > 1.25, 3, code)
     code = tl.where(ax >= 1.75, 4, code)
-    code = tl.where(ax >= 2.5, 5, code)
+    code = tl.where(ax > 2.5, 5, code)
     code = tl.where(ax >= 3.5, 6, code)
-    code = tl.where(ax >= 5.0, 7, code)
+    code = tl.where(ax > 5.0, 7, code)
     sign = tl.where(x < 0.0, 8, 0)
     return (sign | code).to(tl.uint32)
 
@@ -258,7 +258,7 @@ def _decode_mxfp4_registers(packed, scale, BLOCK_M: tl.constexpr, BLOCK_N: tl.co
 
 @triton.jit
 def _mxfp4_attn_fwd_inner_scaled(
-    acc, l_i, m_i, q, q_scale,  #
+    acc0, acc1, acc2, acc3, l_i, m_i, q, q_scale,  #
     K_ptr, K_scale_ptr, V_ptr, V_scale_ptr,  #
     Delta_s_ptr,  #
     stride_kn, stride_kk,  #
@@ -294,7 +294,6 @@ def _mxfp4_attn_fwd_inner_scaled(
     offs_k_scale = tl.arange(0, HEAD_DIM_SCALES)
     offs_n_packed = tl.arange(0, BLOCK_N_PACKED)
     offs_n_scale = tl.arange(0, BLOCK_N_SCALES)
-    offs_d = tl.arange(0, HEAD_DIM)
 
     for start_n in tl.range(lo, hi, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
@@ -371,27 +370,71 @@ def _mxfp4_attn_fwd_inner_scaled(
         )
         l_i = l_i * alpha + l_ij
 
-        # One native scaled MMA for P @ V over the full head dimension.  PNQ is
-        # still preserved through p_packed/p_e8m0 and represented-probability l_i.
-        acc = acc * alpha[:, None]
+        acc0 = acc0 * alpha[:, None]
+        acc1 = acc1 * alpha[:, None]
+        acc2 = acc2 * alpha[:, None]
+        acc3 = acc3 * alpha[:, None]
 
-        v = tl.load(
+        offs_d0 = tl.arange(0, 32)
+        offs_d1 = tl.arange(32, 64)
+        offs_d2 = tl.arange(64, 96)
+        offs_d3 = tl.arange(96, 128)
+        v0 = tl.load(
             V_ptr
-            + offs_d[:, None] * stride_vd
+            + offs_d0[:, None] * stride_vd
             + (start_n // 2 + offs_n_packed)[None, :] * stride_vn
         )
-        v_scale = tl.load(
+        v_scale0 = tl.load(
             V_scale_ptr
-            + offs_d[:, None] * stride_vs_d
+            + offs_d0[:, None] * stride_vs_d
+            + (start_n // 32 + offs_n_scale)[None, :] * stride_vs_n
+        )
+        v1 = tl.load(
+            V_ptr
+            + offs_d1[:, None] * stride_vd
+            + (start_n // 2 + offs_n_packed)[None, :] * stride_vn
+        )
+        v_scale1 = tl.load(
+            V_scale_ptr
+            + offs_d1[:, None] * stride_vs_d
+            + (start_n // 32 + offs_n_scale)[None, :] * stride_vs_n
+        )
+        v2 = tl.load(
+            V_ptr
+            + offs_d2[:, None] * stride_vd
+            + (start_n // 2 + offs_n_packed)[None, :] * stride_vn
+        )
+        v_scale2 = tl.load(
+            V_scale_ptr
+            + offs_d2[:, None] * stride_vs_d
+            + (start_n // 32 + offs_n_scale)[None, :] * stride_vs_n
+        )
+        v3 = tl.load(
+            V_ptr
+            + offs_d3[:, None] * stride_vd
+            + (start_n // 2 + offs_n_packed)[None, :] * stride_vn
+        )
+        v_scale3 = tl.load(
+            V_scale_ptr
+            + offs_d3[:, None] * stride_vs_d
             + (start_n // 32 + offs_n_scale)[None, :] * stride_vs_n
         )
 
-        acc = tl.dot_scaled(
-            p_packed, p_e8m0, "e2m1", tl.trans(v), v_scale, "e2m1", acc
+        acc0 = tl.dot_scaled(
+            p_packed, p_e8m0, "e2m1", tl.trans(v0), v_scale0, "e2m1", acc0
+        )
+        acc1 = tl.dot_scaled(
+            p_packed, p_e8m0, "e2m1", tl.trans(v1), v_scale1, "e2m1", acc1
+        )
+        acc2 = tl.dot_scaled(
+            p_packed, p_e8m0, "e2m1", tl.trans(v2), v_scale2, "e2m1", acc2
+        )
+        acc3 = tl.dot_scaled(
+            p_packed, p_e8m0, "e2m1", tl.trans(v3), v_scale3, "e2m1", acc3
         )
         m_i = m_ij
 
-    return acc, l_i, m_i
+    return acc0, acc1, acc2, acc3, l_i, m_i
 
 
 @triton.jit
@@ -415,9 +458,9 @@ def _mxfp4_attn_fwd_inner(
 ):
     # Determine loop bounds based on causal stage
     if STAGE == 1:
-        lo, hi = 0, start_m * BLOCK_M
+        lo, hi = 0, tl.minimum(start_m * BLOCK_M, N_CTX)
     elif STAGE == 2:
-        lo, hi = start_m * BLOCK_M, (start_m + 1) * BLOCK_M
+        lo, hi = start_m * BLOCK_M, tl.minimum((start_m + 1) * BLOCK_M, N_CTX)
         lo = tl.multiple_of(lo, BLOCK_M)
     else:  # STAGE == 3: non-causal, full range
         lo, hi = 0, N_CTX
@@ -456,16 +499,20 @@ def _mxfp4_attn_fwd_inner(
             qk = qk + ds_tile[None, :]
 
         # -- Online softmax --
+        valid_n = (start_n + offs_n[None, :]) < N_CTX
         if STAGE == 2:
-            mask = offs_m[:, None] >= (start_n + offs_n[None, :])
+            mask = (offs_m[:, None] >= (start_n + offs_n[None, :])) & valid_n
             qk = qk * qk_scale + tl.where(mask, 0, -1.0e6)
             m_ij = tl.maximum(m_i, tl.max(qk, 1))
             qk -= m_ij[:, None]
         else:
-            m_ij = tl.maximum(m_i, tl.max(qk, 1) * qk_scale)
-            qk = qk * qk_scale - m_ij[:, None]
+            qk = qk * qk_scale
+            qk = tl.where(valid_n, qk, -1.0e6)
+            m_ij = tl.maximum(m_i, tl.max(qk, 1))
+            qk -= m_ij[:, None]
 
         p = tl.math.exp2(qk)
+        p = tl.where(valid_n, p, 0.0)
         alpha = tl.math.exp2(m_i - m_ij)
 
         acc = acc * alpha[:, None]
@@ -578,12 +625,15 @@ def _mxfp4_attn_fwd(
 
         m_i = tl.zeros([BLOCK_M], dtype=tl.float32) - float("inf")
         l_i = tl.zeros([BLOCK_M], dtype=tl.float32) + 1.0
-        acc = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
+        acc0 = tl.zeros([BLOCK_M, 32], dtype=tl.float32)
+        acc1 = tl.zeros([BLOCK_M, 32], dtype=tl.float32)
+        acc2 = tl.zeros([BLOCK_M, 32], dtype=tl.float32)
+        acc3 = tl.zeros([BLOCK_M, 32], dtype=tl.float32)
         qk_scale = sm_scale * 1.44269504
 
         if STAGE & 1:
-            acc, l_i, m_i = _mxfp4_attn_fwd_inner_scaled(
-                acc, l_i, m_i, q, q_scale,
+            acc0, acc1, acc2, acc3, l_i, m_i = _mxfp4_attn_fwd_inner_scaled(
+                acc0, acc1, acc2, acc3, l_i, m_i, q, q_scale,
                 K_ptr, K_scale_ptr, V_ptr, V_scale_ptr,
                 Delta_s_ptr,
                 stride_kn, stride_kk,
@@ -599,8 +649,8 @@ def _mxfp4_attn_fwd(
                 UOS_QMAX,
             )
         if STAGE & 2:
-            acc, l_i, m_i = _mxfp4_attn_fwd_inner_scaled(
-                acc, l_i, m_i, q, q_scale,
+            acc0, acc1, acc2, acc3, l_i, m_i = _mxfp4_attn_fwd_inner_scaled(
+                acc0, acc1, acc2, acc3, l_i, m_i, q, q_scale,
                 K_ptr, K_scale_ptr, V_ptr, V_scale_ptr,
                 Delta_s_ptr,
                 stride_kn, stride_kk,
@@ -616,9 +666,18 @@ def _mxfp4_attn_fwd(
                 UOS_QMAX,
             )
 
-        acc = acc / l_i[:, None]
-        o_ptrs = Out + o_offset + offs_m[:, None] * stride_om + tl.arange(0, HEAD_DIM)[None, :] * stride_ok
-        tl.store(o_ptrs, acc.to(Out.dtype.element_ty))
+        acc0 = acc0 / l_i[:, None]
+        acc1 = acc1 / l_i[:, None]
+        acc2 = acc2 / l_i[:, None]
+        acc3 = acc3 / l_i[:, None]
+        offs_d0 = tl.arange(0, 32)
+        offs_d1 = tl.arange(32, 64)
+        offs_d2 = tl.arange(64, 96)
+        offs_d3 = tl.arange(96, 128)
+        tl.store(Out + o_offset + offs_m[:, None] * stride_om + offs_d0[None, :] * stride_ok, acc0.to(Out.dtype.element_ty))
+        tl.store(Out + o_offset + offs_m[:, None] * stride_om + offs_d1[None, :] * stride_ok, acc1.to(Out.dtype.element_ty))
+        tl.store(Out + o_offset + offs_m[:, None] * stride_om + offs_d2[None, :] * stride_ok, acc2.to(Out.dtype.element_ty))
+        tl.store(Out + o_offset + offs_m[:, None] * stride_om + offs_d3[None, :] * stride_ok, acc3.to(Out.dtype.element_ty))
     else:
         HEAD_DIM_PACKED: tl.constexpr = HEAD_DIM // 2
         q = tl.load(
@@ -684,6 +743,9 @@ def mxfp4_flash_attention(
     q_scale: torch.Tensor,
     k_scale: torch.Tensor,
     v_scale: torch.Tensor,
+    *,
+    valid_q_len: int | None = None,
+    valid_k_len: int | None = None,
     causal: bool = False,
     sm_scale: float = None,
     delta_s: torch.Tensor = None,
@@ -698,6 +760,8 @@ def mxfp4_flash_attention(
         q_scale: [B, H, M, D//32] uint8 — E8M0 scales for Q
         k_scale: [B, H, N, D//32] uint8 — E8M0 scales for K
         v_scale: [B, H, D, N//32] uint8 — E8M0 scales for V
+        valid_q_len: original query length before padding
+        valid_k_len: original key/value length before padding
         causal: whether to apply causal mask
         sm_scale: softmax scale (default: 1/sqrt(HEAD_DIM))
         delta_s: [B, H, num_groups, N] float32 — QK smoothing correction (optional)
@@ -708,6 +772,10 @@ def mxfp4_flash_attention(
     B, H, M, D_packed = q_packed.shape
     D = D_packed * 2  # HEAD_DIM
     N = k_packed.shape[2]
+    if valid_q_len is None:
+        valid_q_len = M
+    if valid_k_len is None:
+        valid_k_len = N
 
     if sm_scale is None:
         sm_scale = 1.0 / (D ** 0.5)
@@ -718,6 +786,8 @@ def mxfp4_flash_attention(
     assert D in (64, 128), f"HEAD_DIM must be 64 or 128, got {D}"
     assert M % BLOCK_M == 0, f"M={M} must be divisible by BLOCK_M={BLOCK_M}"
     assert N % BLOCK_N == 0, f"N={N} must be divisible by BLOCK_N={BLOCK_N}"
+    if valid_q_len > M or valid_k_len > N:
+        raise ValueError("valid sequence lengths cannot exceed padded tensor lengths")
 
     output = torch.empty((B, H, M, D), dtype=torch.float32, device=q_packed.device)
 
@@ -752,7 +822,7 @@ def mxfp4_flash_attention(
         # Delta_s strides [B, H, num_groups, N]
         delta_s.stride(0), delta_s.stride(1), delta_s.stride(2), delta_s.stride(3),
         # Dimensions
-        B, H, N,
+        B, H, valid_k_len,
         # Compile-time constants
         HEAD_DIM=D,
         BLOCK_M=BLOCK_M,
@@ -765,7 +835,7 @@ def mxfp4_flash_attention(
         num_stages=4,
     )
 
-    return output
+    return output[:, :, :valid_q_len, :]
 
 
 def mxfp4_pnq_flash_attention(

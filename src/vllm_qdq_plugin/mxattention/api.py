@@ -86,9 +86,11 @@ def _hardware_attention(
             q_s,
             k_s,
             v_s,
+            valid_q_len=m,
+            valid_k_len=n,
             causal=causal,
             sm_scale=sm_scale,
-        )[:, :, :m, :]
+        )
     return out.to(q.dtype)
 
 

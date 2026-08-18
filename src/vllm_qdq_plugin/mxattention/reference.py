@@ -126,10 +126,11 @@ def materialized_pnq_attention(
         k = normalized_fwht(k)
     q_p, q_s = quantize_mxfp4_uos(q, qmax=qmax)
     k_p, k_s = quantize_mxfp4_uos(k, qmax=qmax)
-    v_p, v_s = quantize_mxfp4_uos(v, qmax=qmax)
+    v_t = v.transpose(-1, -2).contiguous()
+    v_p, v_s = quantize_mxfp4_uos(v_t, qmax=qmax)
     qd = dequantize_mxfp4_uos(q_p, q_s)
     kd = dequantize_mxfp4_uos(k_p, k_s)
-    vd = dequantize_mxfp4_uos(v_p, v_s)
+    vd = dequantize_mxfp4_uos(v_p, v_s).transpose(-1, -2).contiguous()
     scores = torch.matmul(qd, kd.transpose(-1, -2)) * sm_scale
     if causal:
         mask = torch.triu(torch.ones(scores.shape[-2:], device=scores.device, dtype=torch.bool), diagonal=1)
@@ -146,10 +147,10 @@ def materialized_pnq_attention(
 
 def sdpa_reference(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, *, sm_scale: float, causal: bool) -> torch.Tensor:
     return F.scaled_dot_product_attention(
-        q.transpose(1, 2),
-        k.transpose(1, 2),
-        v.transpose(1, 2),
+        q,
+        k,
+        v,
         dropout_p=0.0,
         scale=sm_scale,
         is_causal=causal,
-    ).transpose(1, 2)
+    )
