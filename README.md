@@ -112,3 +112,39 @@ DIFFUSION_ATTENTION_BACKEND=TORCH_SDPA python ...
 
 - **Shared memory requirement**: The sage3 fp32 kernel needs ~192KB shared memory per SM. On GPUs with less (e.g., RTX 6000D with 100KB), use `SAGE3_ACC_DTYPE=bf16_both_dot` or switch to TORCH_SDPA.
 - **Cross-attention**: sage3 requires Q and K to have the same sequence length. Cross-attention calls automatically fall back to torch SDPA.
+
+## MXAttention (UOS + PNQ MXFP4)
+
+The plugin also provides an experimental MXAttention backend for NVIDIA
+Blackwell GPUs. It uses MXAttention's UOS scaling (`Qmax=7.25`) and
+Pre-Normalization Quantization (PNQ) for the online probability update. On the
+current Triton 3.6/3.7 Blackwell compiler, the MXFP4 `tl.dot_scaled` lowering
+fails inside the online-softmax loop. MXAttention installs a process-local
+Python workaround for the faulty accumulator-init pass; Triton 3.7.1 is
+required for the split-PV TMEM path. The source-level Triton patch is still
+preferable for production deployment. The MXAttention PNQ path uses native
+`tl.dot_scaled`; the generic non-PNQ compatibility path retains the regular-dot
+fallback.
+
+It is opt-in and overrides the existing `SAGE_ATTN` slot:
+
+```bash
+VLLM_MXATTENTION=1 \
+DIFFUSION_ATTENTION_BACKEND=SAGE_ATTN \
+python examples/offline_inference/image_to_video/image_to_video.py \
+  --model /path/to/Wan2.2-TI2V-5B-Diffusers \
+  --image /path/to/input.jpg \
+  --prompt "smooth natural motion" \
+  --height 320 --width 576 --num-frames 17 --num-inference-steps 2
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `VLLM_MXATTENTION` | `0` | Enable the MXAttention `SAGE_ATTN` override |
+| `MXATTENTION_MODE` | `mxattention_full` | Ablation mode |
+| `MXATTENTION_QMAX` | `7.25` | UOS maximum |
+| `MXATTENTION_USE_HADAMARD` | `1` | Enable normalized D=128 FWHT rotation |
+
+The initial optimized path supports CUDA Blackwell, head dimension 128,
+equal Q/KV heads, and self-attention. Unsupported masks, cross-attention,
+GQA/MQA, and other shapes fall back to PyTorch SDPA.

@@ -26,6 +26,18 @@ def register():
 
 def register_omni_sage3_triton():
     try:
+        from .mxattention.triton_workaround import install as install_triton_workaround
+
+        if install_triton_workaround():
+            logger.warning(
+                "vllm-qdq-plugin: enabled SM100 Triton accumulator-init workaround "
+                "for sage3 Triton"
+            )
+        else:
+            logger.warning(
+                "vllm-qdq-plugin: Triton accumulator-init workaround unavailable"
+            )
+
         from vllm_omni.diffusion.attention.backends.registry import (
             DiffusionAttentionBackendEnum,
             register_diffusion_backend,
@@ -149,6 +161,41 @@ def register_omni_sla_attn():
         )
 
 
+def register_omni_mxattention():
+    try:
+        from .mxattention.triton_workaround import install as install_triton_workaround
+
+        if install_triton_workaround():
+            logger.warning(
+                "vllm-qdq-plugin: enabled SM100 Triton accumulator-init workaround "
+                "for MXAttention"
+            )
+        else:
+            logger.warning(
+                "vllm-qdq-plugin: Triton accumulator-init workaround unavailable"
+            )
+
+        from vllm_omni.diffusion.attention.backends.registry import (
+            DiffusionAttentionBackendEnum,
+            register_diffusion_backend,
+        )
+
+        register_diffusion_backend(
+            DiffusionAttentionBackendEnum.SAGE_ATTN,
+            "vllm_qdq_plugin.mxattention.backend.MXAttentionBackend",
+        )
+        logger.warning(
+            "vllm-qdq-plugin: registered MXAttention backend as SAGE_ATTN "
+            "(VLLM_MXATTENTION=1)"
+        )
+    except ImportError as e:
+        logger.warning(
+            "vllm-qdq-plugin: cannot register MXAttention backend — "
+            "vllm_omni not available (%s)",
+            e,
+        )
+
+
 def _maybe_install_route(route_file: str):
     """Install per-(layer, step) attention routing if a route file is set.
 
@@ -180,15 +227,23 @@ def register_omni():
     sage3_requested = envs.VLLM_SAGE3_TRITON or envs.VLLM_SAGE3_CUTE
     overrides_requested = sum(
         bool(flag)
-        for flag in (envs.VLLM_SLA_ATTN, envs.VLLM_SPARGE_ATTN, sage3_requested)
+        for flag in (
+            envs.VLLM_SLA_ATTN,
+            envs.VLLM_SPARGE_ATTN,
+            envs.VLLM_MXATTENTION,
+            sage3_requested,
+        )
     )
     if overrides_requested > 1:
         raise RuntimeError(
-            "vllm-qdq-plugin: VLLM_SLA_ATTN, VLLM_SPARGE_ATTN, and "
-            "VLLM_SAGE3_{TRITON,CUTE} are mutually exclusive"
+            "vllm-qdq-plugin: VLLM_SLA_ATTN, VLLM_SPARGE_ATTN, "
+            "VLLM_MXATTENTION, and VLLM_SAGE3_{TRITON,CUTE} are mutually exclusive"
         )
 
-    if envs.VLLM_SLA_ATTN:
+    if envs.VLLM_MXATTENTION:
+        register_omni_mxattention()
+        logger.warning_once("vllm-qdq-plugin: registered MXAttention backend for vllm-omni")
+    elif envs.VLLM_SLA_ATTN:
         register_omni_sla_attn()
         logger.warning_once("vllm-qdq-plugin: registered SLA backend for vllm-omni")
     elif envs.VLLM_SPARGE_ATTN:
@@ -211,5 +266,6 @@ def register_omni():
         logger.warning_once(
             "vllm-qdq-plugin: no custom attention backend registered for "
             "vllm-omni — set VLLM_SLA_ATTN=1, VLLM_SPARGE_ATTN=1, "
+            "VLLM_MXATTENTION=1, "
             "VLLM_SAGE3_TRITON=1, or VLLM_SAGE3_CUTE=1 to enable"
         )
