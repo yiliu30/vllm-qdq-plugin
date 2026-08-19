@@ -13,7 +13,9 @@ from .reference import DEFAULT_QMAX, normalized_fwht, sdpa_reference
 SUPPORTED_MODES = {
     "fp16_reference",
     "ocp_mxfp4_direct",
+    "hadamard_only",
     "uos_only",
+    "uos_hadamard",
     "pnq_only",
     "uos_pnq",
     "mxattention_full",
@@ -120,8 +122,12 @@ def mxattention_forward(
     else:
         if mode == "ocp_mxfp4_direct":
             effective_qmax, pnq, hadamard = 6.0, False, False
+        elif mode == "hadamard_only":
+            effective_qmax, pnq, hadamard = 6.0, False, True
         elif mode == "uos_only":
             effective_qmax, pnq, hadamard = qmax, False, False
+        elif mode == "uos_hadamard":
+            effective_qmax, pnq, hadamard = qmax, False, True
         elif mode == "pnq_only":
             effective_qmax, pnq, hadamard = 6.0, True, False
         elif mode == "uos_pnq":

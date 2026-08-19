@@ -26,6 +26,18 @@ def register():
 
 def register_omni_sage3_triton():
     try:
+        from .mxattention.triton_workaround import install as install_triton_workaround
+
+        if install_triton_workaround():
+            logger.warning(
+                "vllm-qdq-plugin: enabled SM100 Triton accumulator-init workaround "
+                "for sage3 Triton"
+            )
+        else:
+            logger.warning(
+                "vllm-qdq-plugin: Triton accumulator-init workaround unavailable"
+            )
+
         from vllm_omni.diffusion.attention.backends.registry import (
             DiffusionAttentionBackendEnum,
             register_diffusion_backend,

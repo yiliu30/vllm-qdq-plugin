@@ -71,6 +71,21 @@ class MXAttentionImpl(AttentionImpl):
             return self._sdpa(query, key, value, attn_metadata)
         return self._forward_mxattention(query, key, value)
 
+    def _effective_mode_flags(self) -> tuple[float, bool, bool]:
+        if self.mode == "ocp_mxfp4_direct":
+            return 6.0, False, False
+        if self.mode == "hadamard_only":
+            return 6.0, False, True
+        if self.mode == "uos_only":
+            return self.qmax, False, False
+        if self.mode == "uos_hadamard":
+            return self.qmax, False, True
+        if self.mode == "pnq_only":
+            return 6.0, True, False
+        if self.mode == "uos_pnq":
+            return self.qmax, True, False
+        return self.qmax, True, self.use_hadamard
+
     @torch.compiler.disable()
     def _forward_mxattention(self, query, key, value):
         """Run the optional Triton path outside torch.compile.
@@ -79,12 +94,15 @@ class MXAttentionImpl(AttentionImpl):
         eager island lets the runtime catch a kernel/compiler incompatibility
         and use SDPA, instead of turning it into a graph-compilation failure.
         """
+        effective_qmax, pnq, hadamard = self._effective_mode_flags()
         logger.warning_once(
-            "MXAttention active for %s: mode=%s qmax=%s hadamard=%s shape=%s",
+            "MXAttention active for %s: mode=%s effective_qmax=%s pnq=%s "
+            "hadamard=%s shape=%s",
             self.prefix or "<unknown>",
             self.mode,
-            self.qmax,
-            self.use_hadamard,
+            effective_qmax,
+            pnq,
+            hadamard,
             tuple(query.shape),
         )
         return mxattention_forward(
